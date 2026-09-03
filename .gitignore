@@ -1,0 +1,24 @@
+# Generated toolkit output
+output/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Certificates and private keys
+*.cer
+*.pfx
+*.p12
+*.p8
+*.pem
+*.key
+
+# Local files
+.vscode/
+*.log
+*.tmp
+*.temp
+Thumbs.db
+Desktop.ini
+.DS_Store
