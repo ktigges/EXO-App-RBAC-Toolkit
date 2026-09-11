@@ -1,5 +1,16 @@
 # Application Access Policy to Exchange Online App RBAC Toolkit
 
+## Microsoft change this toolkit addresses
+
+| Item | Current status |
+|---|---|
+| Change | Exchange Online Application Access Policies are a legacy mailbox-scoping model. Microsoft identifies RBAC for Applications as their replacement and says new access configurations should use App RBAC. |
+| Message Center ID | Not yet published in the cited Microsoft Learn guidance. This repository has no verified MC number as of September 11, 2026. Microsoft Learn says a future deprecation announcement will require migration; update this item when Microsoft publishes that notice. |
+| Retirement date | No firm retirement date has been published. Do not treat this toolkit as evidence of a Microsoft enforcement date. |
+| Official guidance | [Application Access Policies (legacy)](https://learn.microsoft.com/exchange/permissions-exo/application-access-policies) and [Role Based Access Control for Applications in Exchange Online](https://learn.microsoft.com/exchange/permissions-exo/application-rbac) |
+
+Application permissions such as Microsoft Graph `Mail.Read` are organization-wide by default. A legacy Application Access Policy constrains an Entra-granted permission to selected mailboxes. App RBAC replaces that two-part model with an Exchange application role assignment associated with a resource scope, such as a Management Scope or Administrative Unit. During migration, the grants are additive: leaving the organization-wide Entra permission in place can allow access beyond the App RBAC scope. The safe sequence is to inventory first, create and validate the scoped App RBAC assignment, remove the matching broad Entra grant during cutover, observe the workload with a new token, and remove the legacy policy only after validation.
+
 This toolkit can inventory legacy Application Access Policies, assess migration readiness, migrate an existing application to Exchange Online RBAC for Applications, or create optional applications for testing. These are separate workflows. You do not need to create a test application to inventory an existing tenant.
 
 Tenant-changing scripts run in preview mode unless `-Execute` is supplied. `02-Export-AapInventory.ps1` is read-only against the tenant and only writes reports to the local output directory.
@@ -24,7 +35,7 @@ Set-Location "C:\Path\Application Access Policy Migration"
 .\02-Export-AapInventory.ps1 -TenantId $TenantId
 ```
 
-This exports the current policies, related applications and service principals, permissions, credentials, direct scope members, existing App RBAC assignments, and migration-readiness findings. Results are saved under `output\inventory-yyyyMMdd-HHmmss`.
+This exports the current policies, related applications and service principals, permissions, credentials, direct scope members, existing App RBAC assignments, and migration-readiness findings. Results are saved under `Output\inventory-yyyyMMdd-HHmmss` in the toolkit root.
 
 Review the pre-check results in this order:
 
@@ -36,16 +47,42 @@ Review the pre-check results in this order:
 
 See [INVENTORY-OUTPUT-GUIDE.md](INVENTORY-OUTPUT-GUIDE.md) for every field and finding type.
 
-To add an optional legacy effective-access pre-check for a limited mailbox sample:
+### What `-EvaluateEffectiveAccess` does
+
+You do not need this switch to inventory policies, applications, permissions, or policy scope-group members. Use it only when you want Exchange to calculate the current legacy policy outcome for selected app/mailbox pairs.
+
+An application permission such as `Mail.Read` answers **what can the app do?** The Application Access Policy answers **which mailboxes can it do that against?** Exchange therefore needs two values to calculate effective access:
+
+- An application/client ID.
+- A target mailbox whose current policy result should be evaluated.
+
+The script already gets App IDs from the inventoried policies. It gets target mailboxes from Exchange Online; you are not granting or configuring a mailbox by including it in this check. For each selected pair, the script runs `Test-ApplicationAccessPolicy -AppId <app> -Identity <mailbox>` and records `Granted` or `Denied` in `effective-legacy-access.csv`.
+
+You do not provide an "effective mailbox," and the script does not require a mailbox parameter. By default it evaluates all existing mailboxes. `-MailboxFilter` and `-MaxMailboxes` are optional controls that reduce that test set so a tenant-wide check does not become an unnecessarily large app-by-mailbox matrix.
+
+The parameters control each side of that test:
+
+| Parameter | What it selects |
+|---|---|
+| `-EvaluateEffectiveAccess` | Enables the optional policy calculation. |
+| `-EffectiveAccessAppId` | Limits testing to one existing policy App ID. It does not identify a mailbox. If omitted, all inventoried policy App IDs are tested. |
+| `-MailboxFilter` | Limits which existing Exchange mailboxes are used as test targets. If omitted, all mailboxes are selected. |
+| `-MaxMailboxes` | Takes only the first number of mailboxes from the selected mailbox list. It does not limit applications. |
+
+For a useful baseline, select a deterministic mailbox population containing at least one mailbox expected to be allowed and one expected to be denied. For example, tag approved test mailboxes with a custom attribute and run:
 
 ```powershell
 .\02-Export-AapInventory.ps1 `
     -TenantId $TenantId `
     -EvaluateEffectiveAccess `
-    -MaxMailboxes 25
+    -MailboxFilter "CustomAttribute1 -eq 'AppRbacValidation'"
 ```
 
-This tests every inventoried policy App ID against up to 25 selected mailboxes. In a large tenant, use `-MailboxFilter` or `-MaxMailboxes` deliberately. To limit the test to one existing application, also provide `-EffectiveAccessAppId` with its application/client ID.
+To test only one existing application against that same mailbox population, add:
+
+```powershell
+-EffectiveAccessAppId "00000000-0000-0000-0000-000000000000"
+```
 
 Effective-access results are written to `effective-legacy-access.csv`. `Granted` means the legacy policy calculation permits that app/mailbox pair; `Denied` means it does not. This uses `Test-ApplicationAccessPolicy`; it is a configuration check, not a live token or Graph API test.
 
@@ -111,7 +148,7 @@ $legacyParameters = @{
 .\01-New-LegacyAapLab.ps1 @legacyParameters -Execute
 ```
 
-This creates an Entra application, Enterprise Application service principal, certificate, Microsoft Graph `Mail.Read` permission, scope group, and legacy `RestrictAccess` policy. Results are saved in `output\lab\legacy-lab-state.json`.
+This creates an Entra application, Enterprise Application service principal, certificate, Microsoft Graph `Mail.Read` permission, scope group, and legacy `RestrictAccess` policy. Results are saved in `Output\lab\legacy-lab-state.json`.
 
 If a suitable legacy test configuration already exists, skip script 01 and use the existing application details.
 
@@ -121,7 +158,7 @@ If a suitable legacy test configuration already exists, skip script 01 and use t
 .\02-Export-AapInventory.ps1 -TenantId $TenantId
 ```
 
-The read-only inventory is saved under `output\inventory-yyyyMMdd-HHmmss`. This is the same inventory command described in the inventory-only workflow; running script 01 first only gives it a disposable test policy to discover.
+The read-only inventory is saved under `Output\inventory-yyyyMMdd-HHmmss`. This is the same inventory command described in the inventory-only workflow; running script 01 first only gives it a disposable test policy to discover.
 
 Stop here if the goal is only to verify the inventory and pre-check workflow. Continue only if you also want to exercise a migration in the lab.
 
@@ -130,7 +167,7 @@ Stop here if the goal is only to verify the inventory and pre-check workflow. Co
 Load the existing application information:
 
 ```powershell
-$state = Get-Content ".\output\lab\legacy-lab-state.json" -Raw |
+$state = Get-Content ".\Output\lab\legacy-lab-state.json" -Raw |
     ConvertFrom-Json
 
 $AppId = $state.Application.AppId
@@ -237,7 +274,7 @@ After allowing up to two hours for propagation, run the live Graph test:
 
 ```powershell
 $nativeState = Get-Content `
-    ".\output\native-app-rbac-lab\native-app-rbac-lab-state.json" `
+    ".\Output\native-app-rbac-lab\native-app-rbac-lab-state.json" `
     -Raw | ConvertFrom-Json
 
 .\04-Test-GraphMailboxAccess.ps1 `

@@ -56,7 +56,7 @@ Import-Module (Join-Path $PSScriptRoot 'AppRbacMigration.Common.psm1') -Force
 
 if (-not $StatePath) {
     $safeAppId = $AppId -replace '[^a-zA-Z0-9-]', '_'
-    $StatePath = Join-Path $PSScriptRoot "output\migrations\$safeAppId.json"
+    $StatePath = Join-Path (Join-Path (Join-Path $PSScriptRoot 'Output') 'migrations') "$safeAppId.json"
 }
 
 Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(

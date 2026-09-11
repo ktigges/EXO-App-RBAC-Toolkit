@@ -8,7 +8,7 @@ param(
     [Parameter(Mandatory)]
     [string]$TenantId,
 
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot ("output\inventory-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))),
+    [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') ("inventory-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))),
     [switch]$EvaluateEffectiveAccess,
     [string]$EffectiveAccessAppId,
     [string]$MailboxFilter,

@@ -25,7 +25,7 @@ param(
     [int]$CertificateValidDays = 30,
     [switch]$CreateSharedMailboxes,
     [switch]$Execute,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'output\native-app-rbac-lab')
+    [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') 'native-app-rbac-lab')
 )
 
 Set-StrictMode -Version Latest

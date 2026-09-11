@@ -1,6 +1,6 @@
 # Application Access Policy Inventory Output Guide
 
-This guide explains the files produced by `02-Export-AapInventory.ps1`. The inventory is read-only and creates a timestamped folder under `output\inventory-yyyyMMdd-HHmmss`.
+This guide explains the files produced by `02-Export-AapInventory.ps1`. The inventory is read-only and creates a timestamped folder under `Output\inventory-yyyyMMdd-HHmmss` in the toolkit root.
 
 ## How this helps with the migration
 
@@ -230,6 +230,8 @@ Common findings include:
 
 **Customer review:** Use this file to establish a legacy access baseline for positive and negative migration testing. A cmdlet result is not a substitute for a live application test.
 
+The application permission and the mailbox test answer different questions. A permission such as `Mail.Read` says what the application can do. An Application Access Policy says which mailboxes it can do that against. `Test-ApplicationAccessPolicy` therefore requires both an App ID and a target mailbox to calculate one effective result. Supplying a mailbox for evaluation does not grant access or change the policy; it only asks Exchange to evaluate the existing configuration for that app/mailbox pair.
+
 Create the file for every policy App ID against a bounded mailbox set:
 
 ```powershell
@@ -249,7 +251,7 @@ Create it for one policy App ID:
 	-MaxMailboxes 25
 ```
 
-Without `-EffectiveAccessAppId`, all policy App IDs are tested. `-MaxMailboxes` limits the mailbox list, not the number of applications. Use a deterministic `-MailboxFilter` when the output will be used as a migration baseline.
+Without `-EffectiveAccessAppId`, all policy App IDs are tested. `-EffectiveAccessAppId` selects one existing application; it is not a mailbox parameter. Without `-MailboxFilter`, the script retrieves all mailboxes, and `-MaxMailboxes` limits that mailbox list rather than the number of applications. Use a deterministic `-MailboxFilter` that includes known allowed and denied mailboxes when the output will be used as a migration baseline.
 
 ## inventory.json
 

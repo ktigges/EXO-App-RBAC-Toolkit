@@ -24,7 +24,7 @@ param(
     [int]$CertificateValidDays = 30,
     [switch]$CreateSharedMailboxes,
     [switch]$Execute,
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot 'output\lab')
+    [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') 'lab')
 )
 
 Set-StrictMode -Version Latest
