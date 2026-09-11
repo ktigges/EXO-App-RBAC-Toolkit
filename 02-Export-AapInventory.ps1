@@ -10,6 +10,7 @@ param(
 
     [string]$OutputDirectory = (Join-Path $PSScriptRoot ("output\inventory-{0}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))),
     [switch]$EvaluateEffectiveAccess,
+    [string]$EffectiveAccessAppId,
     [string]$MailboxFilter,
     [ValidateRange(0, 100000)]
     [int]$MaxMailboxes = 0
@@ -54,6 +55,10 @@ $permissionToRole = @{
 $policies = @(Get-AllApplicationAccessPolicies)
 if (@($policies).Count -eq 0) {
     Write-Warning 'No Application Access Policies were found.'
+}
+
+if ($EffectiveAccessAppId -and -not $EvaluateEffectiveAccess) {
+    throw '-EffectiveAccessAppId requires -EvaluateEffectiveAccess.'
 }
 
 $appCache = @{}
@@ -109,8 +114,25 @@ foreach ($policy in $policies) {
     $scopeRecipient = $null
     $scopeLookupError = $null
     if ($scopeIdentity) {
+        $policyScopeObjectId = if ([string]$policy.Identity -match ';(?<ObjectId>[0-9a-fA-F-]{36})$') {
+            $Matches.ObjectId
+        }
+        else {
+            $null
+        }
+
         try {
-            $scopeRecipient = Get-Recipient -Identity $scopeIdentity -ErrorAction Stop
+            $scopeRecipients = if ($policyScopeObjectId) {
+                @(Get-Recipient -Identity $policyScopeObjectId -ErrorAction Stop)
+            }
+            else {
+                @(Get-Recipient -Identity $scopeIdentity -ErrorAction Stop)
+            }
+
+            if (@($scopeRecipients).Count -ne 1) {
+                throw "Scope '$scopeIdentity' resolved to $(@($scopeRecipients).Count) recipients; exactly one is required."
+            }
+            $scopeRecipient = $scopeRecipients[0]
         }
         catch {
             $scopeLookupError = $_.Exception.Message
@@ -390,6 +412,12 @@ if ($EvaluateEffectiveAccess) {
     }
 
     $uniqueAppIds = @($policies.AppId | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+    if ($EffectiveAccessAppId) {
+        if ($uniqueAppIds -notcontains $EffectiveAccessAppId) {
+            throw "No Application Access Policy was found for effective-access AppId '$EffectiveAccessAppId'."
+        }
+        $uniqueAppIds = @($EffectiveAccessAppId)
+    }
     $totalTests = @($uniqueAppIds).Count * @($mailboxes).Count
     $testNumber = 0
 
@@ -454,6 +482,7 @@ $summary = [ordered]@{
     ExistingAppRbacAssignmentCount = @($existingRbacRows).Count
     IssueCount = @($issues).Count
     EffectiveAccessEvaluated = [bool]$EvaluateEffectiveAccess
+    EffectiveAccessAppId = if ($EffectiveAccessAppId) { $EffectiveAccessAppId } else { $null }
     EffectiveAccessResultCount = @($effectiveAccessRows).Count
     OutputDirectory = $OutputDirectory
 }

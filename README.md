@@ -11,7 +11,23 @@ Tenant-changing scripts run in preview mode unless `-Execute` is supplied.
     -TenantId "04c70b4f-47b8-4c11-bd5c-404698569670"
 ```
 
-## Test in four steps
+## Order of operations
+
+Use this sequence for a customer migration. Inventory and policy evaluation can cover all applications in one run, but migration and live Graph validation remain one application at a time so that failures and rollback are isolated.
+
+1. Export a baseline inventory for the whole tenant.
+2. Review and resolve High findings, then assign owners for the applications being migrated.
+3. Run the legacy effective-access test for all apps, or for one selected app. Save the results as the before-migration baseline.
+4. Select one application and confirm its Exchange role, scope, positive mailbox, negative mailbox, credential, and rollback owner.
+5. Run `Prepare` for that application, wait for propagation, and verify the App RBAC scope.
+6. Run `Cutover` for that application. This removes the selected Entra mailbox permission and performs the live Graph positive/negative test.
+7. Observe the workload in normal operation and confirm that it uses a newly issued token.
+8. Run `Cleanup` only after observation is approved, then repeat steps 4-8 for the next application.
+9. Export a final tenant inventory after all approved migrations are complete.
+
+`Test-ApplicationAccessPolicy` and `Test-ServicePrincipalAuthorization` are configuration checks. They do not authenticate as the application. The live Graph test in `04-Test-GraphMailboxAccess.ps1` is the end-to-end proof and requires that application's certificate and private key.
+
+## Test lab in four steps
 
 Set the test values:
 
@@ -69,6 +85,29 @@ Optional limited effective-access scan:
     -EvaluateEffectiveAccess `
     -MaxMailboxes 25
 ```
+
+This tests every inventoried policy App ID against the selected mailboxes. The number of checks is the number of apps multiplied by the number of selected mailboxes. Use `-MailboxFilter` or `-MaxMailboxes` deliberately in a large tenant.
+
+Test one application against the same selected mailbox set:
+
+```powershell
+.\02-Export-AapInventory.ps1 `
+    -TenantId $TenantId `
+    -EvaluateEffectiveAccess `
+    -EffectiveAccessAppId "00000000-0000-0000-0000-000000000000" `
+    -MaxMailboxes 25
+```
+
+Test all applications against a specific mailbox population:
+
+```powershell
+.\02-Export-AapInventory.ps1 `
+    -TenantId $TenantId `
+    -EvaluateEffectiveAccess `
+    -MailboxFilter "CustomAttribute1 -eq 'AppRbacPilot'"
+```
+
+Results are written to `effective-legacy-access.csv`. `Granted` means the legacy policy calculation permits that app/mailbox pair; `Denied` means it does not. A result is not a live token or Graph API test.
 
 ### 3. Test the migration
 
@@ -235,7 +274,7 @@ The Entra application, Enterprise Application service principal, and certificate
 |---|---|
 | `AppRbacMigration.Common.psm1` | Shared validation, connection, lookup, and output helpers |
 | `01-New-LegacyAapLab.ps1` | Creates the legacy test configuration |
-| `02-Export-AapInventory.ps1` | Exports inventory and migration-readiness findings |
+| `02-Export-AapInventory.ps1` | Exports inventory and tests legacy policy access for all apps or one app |
 | `03-Convert-AapToAppRbac.ps1` | Runs Prepare, Cutover, or Cleanup |
 | `04-Test-GraphMailboxAccess.ps1` | Tests live authorized and unauthorized mailbox access |
 | `05-New-AppRbacLab.ps1` | Creates a separate application using App RBAC directly |

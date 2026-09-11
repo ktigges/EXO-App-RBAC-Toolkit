@@ -41,6 +41,33 @@ The files provide a point-in-time view of legacy Application Access Policies, re
 
 Use `AppId` as the primary field for correlating records across files. An empty CSV means that no matching records were found for that export. It is not, by itself, an inventory failure.
 
+## Supplied customer run: what it means
+
+The supplied September 9, 2026 inventory is a baseline, not a completed access test or migration approval:
+
+| Result | Interpretation |
+|---|---|
+| 40 policies and 37 resolved applications | Some applications or policy relationships need correlation; do not assume one policy equals one unique app. |
+| 106 Entra application permissions | These include mailbox and non-mailbox permissions. Only a validated mailbox permission-to-role mapping belongs in this migration. |
+| 2,986 direct scope-member rows | This is inventory volume, not the number of unique mailboxes or proof that nested members will remain authorized. |
+| 0 existing App RBAC assignments | No matching App RBAC assignments were found for the inventoried apps at collection time. This is consistent with a pre-migration baseline. |
+| 60 readiness findings | There are 36 High and 24 Medium rows. A finding is a condition, not a unique application, so one app can have several rows. |
+| Effective access not evaluated | `EffectiveAccessEvaluated` is `false` and the result count is zero. The export did not test app/mailbox policy outcomes. |
+
+The largest finding groups are 22 expired credentials, 16 credentials expiring within 90 days, 8 missing application-registration objects, 7 applications with no recorded owner, and 3 missing service principals. An expired credential row does not prove the production workload is down; applications can have multiple credentials, and the workload may use another one. Confirm the credential actually in use before remediation. A missing application-registration object can be expected for some externally owned or multi-tenant applications, but its ownership and migration path still require confirmation.
+
+Two scope rows in this run were resolved ambiguously because their displayed scope identity matched multiple recipients, and one stale scope could not be resolved. The exporter now uses the exact directory object ID embedded in the policy identity when available. Rerun the inventory before deciding whether the two `ScopeMemberEnumerationFailed` findings are genuine. The unresolved `ScopeRecipientLookupFailed` finding still requires confirmation that the referenced group exists.
+
+Recommended action order for this dataset:
+
+1. Rerun the corrected inventory and compare the scope-resolution findings.
+2. Resolve missing service principals and unresolved scopes; these prevent automatic migration.
+3. Confirm owners and the active credential for each application selected for migration.
+4. Review nested groups and redesign any membership that depends on nesting.
+5. Validate each mailbox permission against the application's real API operations.
+6. Capture effective legacy access for all apps or the selected app before `Prepare`.
+7. Migrate and live-test one application at a time using the sequence in `README.md`.
+
 ## application-access-policies.csv
 
 **Purpose:** One row per legacy Exchange Online Application Access Policy. This is the starting point for identifying applications that may need migration.
@@ -202,6 +229,27 @@ Common findings include:
 | `AccessCheckResult` | Effective legacy policy result, such as `Granted` or `Denied`. |
 
 **Customer review:** Use this file to establish a legacy access baseline for positive and negative migration testing. A cmdlet result is not a substitute for a live application test.
+
+Create the file for every policy App ID against a bounded mailbox set:
+
+```powershell
+.\02-Export-AapInventory.ps1 `
+	-TenantId $TenantId `
+	-EvaluateEffectiveAccess `
+	-MailboxFilter "CustomAttribute1 -eq 'AppRbacPilot'"
+```
+
+Create it for one policy App ID:
+
+```powershell
+.\02-Export-AapInventory.ps1 `
+	-TenantId $TenantId `
+	-EvaluateEffectiveAccess `
+	-EffectiveAccessAppId $AppId `
+	-MaxMailboxes 25
+```
+
+Without `-EffectiveAccessAppId`, all policy App IDs are tested. `-MaxMailboxes` limits the mailbox list, not the number of applications. Use a deterministic `-MailboxFilter` when the output will be used as a migration baseline.
 
 ## inventory.json
 

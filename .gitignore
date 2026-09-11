@@ -1,5 +1,17 @@
 # Generated toolkit output
-output/
+**/output/
+
+# Customer inventory and generated reports
+application-access-policies.csv
+application-access-policy-to-app-rbac.html
+application-permissions.csv
+applications.csv
+credential-expiration.csv
+effective-legacy-access.csv
+existing-app-rbac-assignments.csv
+inventory.json
+migration-readiness-issues.csv
+scope-members.csv
 
 # Environment files
 .env
