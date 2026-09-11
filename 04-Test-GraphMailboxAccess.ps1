@@ -18,13 +18,16 @@ param(
     [string]$NegativeMailbox,
 
     [Parameter(Mandatory)]
-    [string]$CertificateThumbprint
+    [string]$CertificateThumbprint,
+
+    [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') 'live-validation')
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'AppRbacMigration.Common.psm1') -Force
+Assert-WindowsCertificateStore -Operation 'Certificate-based Microsoft Graph mailbox validation'
 Assert-RequiredModule -Name Microsoft.Graph.Authentication -MinimumVersion 2.0
 Import-Module Microsoft.Graph.Authentication
 
@@ -93,7 +96,7 @@ if ($statusCode -ne 403 -and $errorText -notmatch '403|ErrorAccessDenied|Authori
 Write-Host "Unauthorized mailbox test was correctly denied for '$NegativeMailbox'." -ForegroundColor Green
 Disconnect-MgGraph | Out-Null
 
-[pscustomobject]@{
+$result = [pscustomobject]@{
     AppId = $AppId
     PositiveMailbox = $PositiveMailbox
     PositiveResult = 'Succeeded'
@@ -101,3 +104,10 @@ Disconnect-MgGraph | Out-Null
     NegativeResult = 'Denied'
     TestedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
 }
+
+$safeAppId = $AppId -replace '[^a-zA-Z0-9-]', '_'
+$resultPath = Join-Path $OutputDirectory ("live-validation-{0}-{1}.json" -f $safeAppId, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+Write-ToolkitJson -InputObject $result -Path $resultPath
+
+Write-Host "Validation result: $resultPath" -ForegroundColor Green
+$result

@@ -33,22 +33,61 @@ function Connect-AppRbacServices {
             'Directory.Read.All'
         ),
 
+        [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+        [string]$AuthenticationMode = 'Auto',
+
         [switch]$ExchangeOnly,
         [switch]$GraphOnly
     )
+
+    $isWindowsPlatform = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+        $true
+    }
+    else {
+        [bool]$IsWindows
+    }
+
+    if ($AuthenticationMode -eq 'Browser' -and -not $isWindowsPlatform) {
+        throw "Browser authentication isn't supported by the installed Exchange Online authentication stack on this operating system. Use -AuthenticationMode DeviceCode, or omit the parameter to use the cross-platform Auto default."
+    }
+
+    $useDeviceCode = switch ($AuthenticationMode) {
+        'DeviceCode' { $true }
+        'Browser' { $false }
+        default { -not $isWindowsPlatform }
+    }
 
     if (-not $ExchangeOnly) {
         Assert-RequiredModule -Name Microsoft.Graph.Authentication -MinimumVersion 2.0
         Assert-RequiredModule -Name Microsoft.Graph.Applications -MinimumVersion 2.0
         Import-Module Microsoft.Graph.Authentication
         Import-Module Microsoft.Graph.Applications
-        Connect-MgGraph -TenantId $TenantId -Scopes $GraphScopes -NoWelcome
+
+        $graphParameters = @{
+            TenantId = $TenantId
+            Scopes    = $GraphScopes
+            NoWelcome = $true
+        }
+        if ($useDeviceCode) {
+            $graphParameters.UseDeviceCode = $true
+        }
+        Connect-MgGraph @graphParameters
     }
 
     if (-not $GraphOnly) {
         Assert-RequiredModule -Name ExchangeOnlineManagement -MinimumVersion 3.4
         Import-Module ExchangeOnlineManagement
-        Connect-ExchangeOnline -ShowBanner:$false
+
+        $exchangeParameters = @{
+            ShowBanner = $false
+        }
+        if ($useDeviceCode) {
+            $exchangeParameters.Device = $true
+        }
+        elseif ((Get-Command Connect-ExchangeOnline).Parameters.ContainsKey('DisableWAM')) {
+            $exchangeParameters.DisableWAM = $true
+        }
+        Connect-ExchangeOnline @exchangeParameters
 
         $exchangeConnection = Get-ConnectionInformation |
             Where-Object {
@@ -60,13 +99,39 @@ function Connect-AppRbacServices {
         if (-not $exchangeConnection) {
             throw 'Exchange Online connected, but connection information could not be retrieved.'
         }
-        $graphContext = Get-MgContext
-        if (-not $graphContext -or -not $graphContext.TenantId) {
-            throw 'Microsoft Graph connection context could not be retrieved.'
+
+        if ([string]$exchangeConnection.TenantID -ne [string]$TenantId) {
+            throw "Tenant mismatch. Exchange Online connected to '$($exchangeConnection.TenantID)' instead of requested tenant '$TenantId'."
         }
-        if ([string]$exchangeConnection.TenantID -ne [string]$graphContext.TenantId) {
-            throw "Tenant mismatch. Microsoft Graph is connected to '$($graphContext.TenantId)', but Exchange Online is connected to '$($exchangeConnection.TenantID)'."
+
+        if (-not $ExchangeOnly) {
+            $graphContext = Get-MgContext
+            if (-not $graphContext -or -not $graphContext.TenantId) {
+                throw 'Microsoft Graph connection context could not be retrieved.'
+            }
+            if ([string]$exchangeConnection.TenantID -ne [string]$graphContext.TenantId) {
+                throw "Tenant mismatch. Microsoft Graph is connected to '$($graphContext.TenantId)', but Exchange Online is connected to '$($exchangeConnection.TenantID)'."
+            }
         }
+    }
+}
+
+function Assert-WindowsCertificateStore {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Operation
+    )
+
+    $isWindowsPlatform = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+        $true
+    }
+    else {
+        [bool]$IsWindows
+    }
+
+    if (-not $isWindowsPlatform) {
+        throw "$Operation requires the Windows certificate store and must run in PowerShell 7 on Windows or Windows PowerShell 5.1. Inventory and delegated migration operations remain supported on macOS and Linux."
     }
 }
 
@@ -383,6 +448,7 @@ function Assert-ExecutionApproved {
 
 Export-ModuleMember -Function @(
     'Assert-RequiredModule',
+    'Assert-WindowsCertificateStore',
     'Connect-AppRbacServices',
     'ConvertTo-ODataLiteral',
     'Get-EntraServicePrincipalByAppId',

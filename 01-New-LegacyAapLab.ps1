@@ -24,6 +24,8 @@ param(
     [int]$CertificateValidDays = 30,
     [switch]$CreateSharedMailboxes,
     [switch]$Execute,
+    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [string]$AuthenticationMode = 'Auto',
     [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') 'lab')
 )
 
@@ -57,11 +59,13 @@ if (-not $Execute) {
     return
 }
 
+Assert-WindowsCertificateStore -Operation 'Creating the legacy Application Access Policy lab'
+
 Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
     'Application.ReadWrite.All',
     'AppRoleAssignment.ReadWrite.All',
     'Directory.ReadWrite.All'
-)
+) -AuthenticationMode $AuthenticationMode
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 

@@ -25,6 +25,8 @@ param(
     [int]$CertificateValidDays = 30,
     [switch]$CreateSharedMailboxes,
     [switch]$Execute,
+    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [string]$AuthenticationMode = 'Auto',
     [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') 'native-app-rbac-lab')
 )
 
@@ -60,10 +62,12 @@ if (-not $Execute) {
     return
 }
 
+Assert-WindowsCertificateStore -Operation 'Creating the native App RBAC lab'
+
 Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
     'Application.ReadWrite.All',
     'Directory.ReadWrite.All'
-)
+) -AuthenticationMode $AuthenticationMode
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 

@@ -13,7 +13,9 @@ param(
     [string]$EffectiveAccessAppId,
     [string]$MailboxFilter,
     [ValidateRange(0, 100000)]
-    [int]$MaxMailboxes = 0
+    [int]$MaxMailboxes = 0,
+    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [string]$AuthenticationMode = 'Auto'
 )
 
 Set-StrictMode -Version Latest
@@ -21,10 +23,39 @@ $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'AppRbacMigration.Common.psm1') -Force
 
+function Write-InventoryReviewDashboard {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Inventory,
+
+        [Parameter(Mandatory)]
+        [string]$TemplatePath,
+
+        [Parameter(Mandatory)]
+        [string]$OutputPath
+    )
+
+    if (-not (Test-Path -LiteralPath $TemplatePath -PathType Leaf)) {
+        throw "Inventory review dashboard template was not found at '$TemplatePath'."
+    }
+
+    $placeholder = '__INVENTORY_JSON__'
+    $template = Get-Content -LiteralPath $TemplatePath -Raw
+    if ($template.IndexOf($placeholder) -lt 0 -or $template.IndexOf($placeholder) -ne $template.LastIndexOf($placeholder)) {
+        throw "Inventory review dashboard template must contain exactly one '$placeholder' placeholder."
+    }
+
+    $embeddedJson = $Inventory | ConvertTo-Json -Depth 20 -Compress
+    $embeddedJson = $embeddedJson.Replace('&', '\u0026').Replace('<', '\u003c').Replace('>', '\u003e')
+    $dashboard = $template.Replace($placeholder, $embeddedJson)
+    [System.IO.File]::WriteAllText($OutputPath, $dashboard, [System.Text.UTF8Encoding]::new($false))
+}
+
 Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
     'Application.Read.All',
     'Directory.Read.All'
-)
+) -AuthenticationMode $AuthenticationMode
 
 New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
@@ -472,6 +503,7 @@ if ($EvaluateEffectiveAccess) {
         Export-Csv -Path (Join-Path $OutputDirectory 'effective-legacy-access.csv') -NoTypeInformation -Encoding utf8
 }
 
+$dashboardPath = Join-Path $OutputDirectory 'inventory-review.html'
 $summary = [ordered]@{
     GeneratedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
     TenantId = $TenantId
@@ -485,9 +517,10 @@ $summary = [ordered]@{
     EffectiveAccessAppId = if ($EffectiveAccessAppId) { $EffectiveAccessAppId } else { $null }
     EffectiveAccessResultCount = @($effectiveAccessRows).Count
     OutputDirectory = $OutputDirectory
+    ReviewDashboardPath = $dashboardPath
 }
 
-Write-ToolkitJson -InputObject ([ordered]@{
+$inventory = [ordered]@{
         Summary = $summary
         Policies = @($policyRows)
         Applications = @($applicationRows)
@@ -497,7 +530,13 @@ Write-ToolkitJson -InputObject ([ordered]@{
         ExistingAppRbacAssignments = @($existingRbacRows)
         Issues = @($issues)
         EffectiveLegacyAccess = @($effectiveAccessRows)
-    }) -Path (Join-Path $OutputDirectory 'inventory.json')
+    }
+
+Write-ToolkitJson -InputObject $inventory -Path (Join-Path $OutputDirectory 'inventory.json')
+Write-InventoryReviewDashboard `
+    -Inventory $inventory `
+    -TemplatePath (Join-Path $PSScriptRoot 'InventoryReviewDashboard.template.html') `
+    -OutputPath $dashboardPath
 
 Write-Host ''
 Write-Host 'Application Access Policy inventory complete.' -ForegroundColor Green

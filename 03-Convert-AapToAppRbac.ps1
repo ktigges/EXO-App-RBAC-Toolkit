@@ -46,6 +46,8 @@ param(
     [switch]$AutoRollbackOnValidationFailure,
     [switch]$ObservationValidated,
     [switch]$Execute,
+    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [string]$AuthenticationMode = 'Auto',
     [string]$StatePath
 )
 
@@ -63,7 +65,7 @@ Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
     'Application.Read.All',
     'AppRoleAssignment.ReadWrite.All',
     'Directory.Read.All'
-)
+) -AuthenticationMode $AuthenticationMode
 $resolvedTenantId = [string](Get-MgContext).TenantId
 
 $servicePrincipal = Get-EntraServicePrincipalByAppId -AppId $AppId
@@ -186,6 +188,26 @@ function Get-TargetEntraPermissionAssignment {
     return $matchedAssignments | Select-Object -First 1
 }
 
+function Get-PolicyControlledEntraPermissionAssignments {
+    $supportedPermissionValues = @(
+        'Mail.Read',
+        'Mail.ReadBasic',
+        'Mail.ReadBasic.All',
+        'Mail.ReadWrite',
+        'Mail.Send',
+        'MailboxSettings.Read',
+        'MailboxSettings.ReadWrite',
+        'Calendars.Read',
+        'Calendars.ReadWrite',
+        'Contacts.Read',
+        'Contacts.ReadWrite',
+        'full_access_as_app'
+    )
+
+    return @(Get-GraphApplicationPermissionDetails -ServicePrincipalId $servicePrincipal.Id |
+            Where-Object { $supportedPermissionValues -contains [string]$_.PermissionValue })
+}
+
 function ConvertTo-NormalizedFilter {
     param(
         [AllowNull()]
@@ -277,6 +299,26 @@ function Invoke-LiveValidation {
 if ($Phase -eq 'Prepare') {
     $createdScope = $false
     $createdAssignment = $false
+
+    if (-not $EntraPermissionValue) {
+        throw '-EntraPermissionValue is required during Prepare to validate the permission being migrated.'
+    }
+
+    $policyControlledAssignments = @(Get-PolicyControlledEntraPermissionAssignments)
+    $selectedPermissionAssignments = @($policyControlledAssignments |
+            Where-Object PermissionValue -eq $EntraPermissionValue)
+    if ($selectedPermissionAssignments.Count -ne 1) {
+        throw "Expected exactly one Entra application permission '$EntraPermissionValue' controlled by Application Access Policies; found $($selectedPermissionAssignments.Count)."
+    }
+
+    $otherPolicyControlledAssignments = @($policyControlledAssignments |
+            Where-Object PermissionValue -ne $EntraPermissionValue)
+    if ($otherPolicyControlledAssignments.Count -gt 0) {
+        $otherPermissionValues = @($otherPolicyControlledAssignments.PermissionValue |
+                Sort-Object -Unique) -join ', '
+        throw "AppId '$AppId' also has Application Access Policy-controlled permissions: $otherPermissionValues. This workflow migrates one permission-to-role mapping and must not remove the shared legacy policy while other controlled permissions remain. Create a coordinated migration design for this application before continuing."
+    }
+
     $allAppPolicies = @(Get-AllApplicationAccessPolicies | Where-Object {
             $policyAppIds = @(([string]$_.AppId -split '\s*,\s*') | Where-Object { $_ })
             $policyAppIds -contains $AppId -or $policyAppIds -contains '*'
@@ -508,10 +550,10 @@ if ($Phase -eq 'Cutover') {
             try {
                 $graphContext = Get-MgContext
                 if (-not $graphContext -or [string]$graphContext.TenantId -ne $resolvedTenantId) {
-                    Connect-MgGraph -TenantId $TenantId -Scopes @(
+                    Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
                         'Application.Read.All',
                         'AppRoleAssignment.ReadWrite.All'
-                    ) -NoWelcome
+                    ) -AuthenticationMode $AuthenticationMode -GraphOnly
                 }
 
                 New-MgServicePrincipalAppRoleAssignment `
@@ -628,10 +670,10 @@ if ($Phase -eq 'Cleanup') {
             if (-not $existingPermission) {
                 $graphContext = Get-MgContext
                 if (-not $graphContext -or [string]$graphContext.TenantId -ne $resolvedTenantId) {
-                    Connect-MgGraph -TenantId $TenantId -Scopes @(
+                    Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
                         'Application.Read.All',
                         'AppRoleAssignment.ReadWrite.All'
-                    ) -NoWelcome
+                    ) -AuthenticationMode $AuthenticationMode -GraphOnly
                 }
 
                 New-MgServicePrincipalAppRoleAssignment `
