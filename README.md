@@ -1,17 +1,63 @@
 # Application Access Policy to Exchange Online App RBAC Toolkit
 
-This toolkit inventories legacy Application Access Policies, migrates an existing application to Exchange Online RBAC for Applications, and creates a separate application for testing new Exchange Online App RBAC authorization.
+This toolkit can inventory legacy Application Access Policies, assess migration readiness, migrate an existing application to Exchange Online RBAC for Applications, or create optional applications for testing. These are separate workflows. You do not need to create a test application to inventory an existing tenant.
 
-Tenant-changing scripts run in preview mode unless `-Execute` is supplied.
+Tenant-changing scripts run in preview mode unless `-Execute` is supplied. `02-Export-AapInventory.ps1` is read-only against the tenant and only writes reports to the local output directory.
 
-> **Only need the current status?** Run the second script. It is read-only and exports the current policies, applications, permissions, scopes, credentials, and migration-readiness findings.
+## Choose the workflow
+
+| Goal | Scripts to use |
+|---|---|
+| Inventory and pre-check an existing tenant without migration | `02-Export-AapInventory.ps1` only |
+| Create a disposable legacy policy for a lab | `01-New-LegacyAapLab.ps1`, then optionally script 02 |
+| Migrate an existing application | Script 02 for the baseline, then scripts 03 and 04 one application at a time |
+| Test a new application built directly on App RBAC | Scripts 05 and 04 |
+
+## Inventory and pre-check only (no migration)
+
+Use this path when the tenant already has applications and Application Access Policies and you only want a point-in-time assessment. Do not run scripts 01, 03, or 05.
+
+```powershell
+$TenantId = "00000000-0000-0000-0000-000000000000"
+Set-Location "C:\Path\Application Access Policy Migration"
+
+.\02-Export-AapInventory.ps1 -TenantId $TenantId
+```
+
+This exports the current policies, related applications and service principals, permissions, credentials, direct scope members, existing App RBAC assignments, and migration-readiness findings. Results are saved under `output\inventory-yyyyMMdd-HHmmss`.
+
+Review the pre-check results in this order:
+
+1. `migration-readiness-issues.csv` for High and Medium findings.
+2. `application-access-policies.csv` for policy-to-application and scope relationships.
+3. `applications.csv` and `application-permissions.csv` for application identity and current grants.
+4. `scope-members.csv` for direct membership and nested-group issues.
+5. `credential-expiration.csv` and `existing-app-rbac-assignments.csv` for operational and configuration conflicts.
+
+See [INVENTORY-OUTPUT-GUIDE.md](INVENTORY-OUTPUT-GUIDE.md) for every field and finding type.
+
+To add an optional legacy effective-access pre-check for a limited mailbox sample:
 
 ```powershell
 .\02-Export-AapInventory.ps1 `
-    -TenantId "04c70b4f-47b8-4c11-bd5c-404698569670"
+    -TenantId $TenantId `
+    -EvaluateEffectiveAccess `
+    -MaxMailboxes 25
 ```
 
-## Order of operations
+This tests every inventoried policy App ID against up to 25 selected mailboxes. In a large tenant, use `-MailboxFilter` or `-MaxMailboxes` deliberately. To limit the test to one existing application, also provide `-EffectiveAccessAppId` with its application/client ID.
+
+Effective-access results are written to `effective-legacy-access.csv`. `Granted` means the legacy policy calculation permits that app/mailbox pair; `Denied` means it does not. This uses `Test-ApplicationAccessPolicy`; it is a configuration check, not a live token or Graph API test.
+
+This inventory and pre-check path does not create an application, change permissions or policies, create App RBAC assignments, remove legacy access, or perform a migration.
+
+## How scripts 01 and 02 work together
+
+`01-New-LegacyAapLab.ps1` is optional test setup for a nonproduction tenant that does not already have a suitable legacy application and policy. It creates a disposable Entra application, service principal, certificate, Graph `Mail.Read` grant, scope group, and legacy `RestrictAccess` policy.
+
+`02-Export-AapInventory.ps1` discovers what already exists in the tenant. It does not depend on script 01 or its state file. If you run script 01 first, the test application and policy simply appear in the next inventory alongside any other policies. If the tenant already has an application and policy to assess, start directly with script 02.
+
+## Customer migration order of operations
 
 Use this sequence for a customer migration. Inventory and policy evaluation can cover all applications in one run, but migration and live Graph validation remain one application at a time so that failures and rollback are isolated.
 
@@ -27,25 +73,27 @@ Use this sequence for a customer migration. Inventory and policy evaluation can 
 
 `Test-ApplicationAccessPolicy` and `Test-ServicePrincipalAuthorization` are configuration checks. They do not authenticate as the application. The live Graph test in `04-Test-GraphMailboxAccess.ps1` is the end-to-end proof and requires that application's certificate and private key.
 
-## Test lab in four steps
+## Optional end-to-end test lab
+
+Use this section only to create and migrate disposable test configurations in an approved nonproduction tenant. It is not required for inventory or pre-checks in a tenant that already has legacy policies.
 
 Set the test values:
 
 ```powershell
-$TenantId = "04c70b4f-47b8-4c11-bd5c-404698569670"
-$AcceptedDomain = "kytigges.com"
+$TenantId = "00000000-0000-0000-0000-000000000000"
+$AcceptedDomain = "contoso.com"
 $AuthorizedMailboxes = @(
-    "aap-lab-invoices@kytigges.com",
-    "aap-lab-errors@kytigges.com"
+    "aap-lab-invoices@contoso.com",
+    "aap-lab-errors@contoso.com"
 )
-$DeniedMailbox = "aap-lab-denied@kytigges.com"
+$DeniedMailbox = "aap-lab-denied@contoso.com"
 
-Set-Location "C:\Users\kevintigges\OneDrive - Microsoft\Working FIles\Application Access Policy Migration\Toolkit"
+Set-Location "C:\Path\Application Access Policy Migration"
 ```
 
 The denied mailbox must remain outside the authorized group. It confirms that the application cannot access mailboxes beyond its approved scope.
 
-### 1. Create the legacy test configuration
+### 1. Create the optional legacy test configuration
 
 ```powershell
 $legacyParameters = @{
@@ -65,51 +113,19 @@ $legacyParameters = @{
 
 This creates an Entra application, Enterprise Application service principal, certificate, Microsoft Graph `Mail.Read` permission, scope group, and legacy `RestrictAccess` policy. Results are saved in `output\lab\legacy-lab-state.json`.
 
-If the configuration already exists, skip this step and use the existing state file.
+If a suitable legacy test configuration already exists, skip script 01 and use the existing application details.
 
-### 2. Export the inventory
+### 2. Inventory the optional lab configuration
 
 ```powershell
 .\02-Export-AapInventory.ps1 -TenantId $TenantId
 ```
 
-The read-only inventory is saved under `output\inventory-yyyyMMdd-HHmmss`.
+The read-only inventory is saved under `output\inventory-yyyyMMdd-HHmmss`. This is the same inventory command described in the inventory-only workflow; running script 01 first only gives it a disposable test policy to discover.
 
-Review `migration-readiness-issues.csv` first, followed by the policy, application, permission, scope-member, credential, and existing App RBAC exports. See [INVENTORY-OUTPUT-GUIDE.md](INVENTORY-OUTPUT-GUIDE.md) for full definitions.
+Stop here if the goal is only to verify the inventory and pre-check workflow. Continue only if you also want to exercise a migration in the lab.
 
-Optional limited effective-access scan:
-
-```powershell
-.\02-Export-AapInventory.ps1 `
-    -TenantId $TenantId `
-    -EvaluateEffectiveAccess `
-    -MaxMailboxes 25
-```
-
-This tests every inventoried policy App ID against the selected mailboxes. The number of checks is the number of apps multiplied by the number of selected mailboxes. Use `-MailboxFilter` or `-MaxMailboxes` deliberately in a large tenant.
-
-Test one application against the same selected mailbox set:
-
-```powershell
-.\02-Export-AapInventory.ps1 `
-    -TenantId $TenantId `
-    -EvaluateEffectiveAccess `
-    -EffectiveAccessAppId "00000000-0000-0000-0000-000000000000" `
-    -MaxMailboxes 25
-```
-
-Test all applications against a specific mailbox population:
-
-```powershell
-.\02-Export-AapInventory.ps1 `
-    -TenantId $TenantId `
-    -EvaluateEffectiveAccess `
-    -MailboxFilter "CustomAttribute1 -eq 'AppRbacPilot'"
-```
-
-Results are written to `effective-legacy-access.csv`. `Granted` means the legacy policy calculation permits that app/mailbox pair; `Denied` means it does not. A result is not a live token or Graph API test.
-
-### 3. Test the migration
+### 3. Optionally migrate the legacy lab application
 
 Load the existing application information:
 
