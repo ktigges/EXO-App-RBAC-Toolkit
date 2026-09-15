@@ -25,7 +25,7 @@ param(
     [int]$CertificateValidDays = 30,
     [switch]$CreateSharedMailboxes,
     [switch]$Execute,
-    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [ValidateSet('Auto', 'Browser')]
     [string]$AuthenticationMode = 'Auto',
     [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') 'native-app-rbac-lab')
 )

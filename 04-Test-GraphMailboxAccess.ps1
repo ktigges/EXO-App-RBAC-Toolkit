@@ -1,9 +1,9 @@
 # Title: Test Microsoft Graph Mailbox Access
 # Author: Kevin Tigges
 # Date: 2026-09-03
-# Summary: Tests authorized and unauthorized mailbox access using app-only certificate authentication.
+# Summary: Tests one mailbox access expectation using app-only certificate authentication.
 
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Pem')]
 param(
     [Parameter(Mandatory)]
     [string]$TenantId,
@@ -12,13 +12,20 @@ param(
     [string]$AppId,
 
     [Parameter(Mandatory)]
-    [string]$PositiveMailbox,
+    [string]$Mailbox,
 
     [Parameter(Mandatory)]
-    [string]$NegativeMailbox,
+    [ValidateSet('Allowed', 'Denied')]
+    [string]$ExpectedAccess,
 
-    [Parameter(Mandatory)]
+    [Parameter(Mandatory, ParameterSetName = 'Thumbprint')]
     [string]$CertificateThumbprint,
+
+    [Parameter(Mandatory, ParameterSetName = 'Pem')]
+    [string]$CertificatePemPath,
+
+    [Parameter(Mandatory, ParameterSetName = 'Pem')]
+    [string]$PrivateKeyPath,
 
     [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') 'live-validation')
 )
@@ -27,25 +34,48 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'AppRbacMigration.Common.psm1') -Force
-Assert-WindowsCertificateStore -Operation 'Certificate-based Microsoft Graph mailbox validation'
 Assert-RequiredModule -Name Microsoft.Graph.Authentication -MinimumVersion 2.0
 Import-Module Microsoft.Graph.Authentication
 
-$certificate = Get-Item -Path "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction Stop
+$certificate = if ($PSCmdlet.ParameterSetName -eq 'Pem') {
+    if (-not (Test-Path -LiteralPath $CertificatePemPath -PathType Leaf)) {
+        throw "Certificate PEM file was not found at '$CertificatePemPath'."
+    }
+    if (-not (Test-Path -LiteralPath $PrivateKeyPath -PathType Leaf)) {
+        throw "Private key file was not found at '$PrivateKeyPath'."
+    }
+
+    [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile(
+        $CertificatePemPath,
+        $PrivateKeyPath
+    )
+}
+else {
+    Assert-WindowsCertificateStore -Operation 'Certificate-thumbprint Microsoft Graph mailbox validation'
+    Get-Item -Path "Cert:\CurrentUser\My\$CertificateThumbprint" -ErrorAction Stop
+}
+
 if (-not $certificate.HasPrivateKey) {
-    throw "Certificate '$CertificateThumbprint' does not have an accessible private key."
+    throw 'The supplied certificate does not have an accessible private key.'
 }
 if ($certificate.NotAfter -le (Get-Date)) {
-    throw "Certificate '$CertificateThumbprint' is expired."
+    throw "The supplied certificate expired at '$($certificate.NotAfter.ToUniversalTime().ToString('o'))'."
 }
 
 Disconnect-MgGraph -ErrorAction SilentlyContinue | Out-Null
-Connect-MgGraph `
-    -TenantId $TenantId `
-    -ClientId $AppId `
-    -CertificateThumbprint $CertificateThumbprint `
-    -ContextScope Process `
-    -NoWelcome
+$graphConnectionParameters = @{
+    TenantId    = $TenantId
+    ClientId    = $AppId
+    ContextScope = 'Process'
+    NoWelcome   = $true
+}
+if ($PSCmdlet.ParameterSetName -eq 'Pem') {
+    $graphConnectionParameters.Certificate = $certificate
+}
+else {
+    $graphConnectionParameters.CertificateThumbprint = $CertificateThumbprint
+}
+Connect-MgGraph @graphConnectionParameters
 
 function Invoke-MailReadTest {
     param(
@@ -58,55 +88,63 @@ function Invoke-MailReadTest {
     return Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType PSObject
 }
 
-Write-Host "Testing authorized mailbox '$PositiveMailbox'..." -ForegroundColor Cyan
-$positiveResult = Invoke-MailReadTest -Mailbox $PositiveMailbox
-if ($null -eq $positiveResult) {
-    throw "The positive mailbox request for '$PositiveMailbox' returned no response object."
-}
-Write-Host "Authorized mailbox test succeeded for '$PositiveMailbox'." -ForegroundColor Green
-
-Write-Host "Testing unauthorized mailbox '$NegativeMailbox'..." -ForegroundColor Cyan
-$negativeSucceeded = $false
-$negativeError = $null
+Write-Host "Testing mailbox '$Mailbox'; expected access: $ExpectedAccess..." -ForegroundColor Cyan
+$requestSucceeded = $false
+$requestError = $null
+$response = $null
 try {
-    $null = Invoke-MailReadTest -Mailbox $NegativeMailbox
-    $negativeSucceeded = $true
+    $response = Invoke-MailReadTest -Mailbox $Mailbox
+    $requestSucceeded = $true
 }
 catch {
-    $negativeError = $_
-}
-
-if ($negativeSucceeded) {
-    throw "The negative mailbox request unexpectedly succeeded for '$NegativeMailbox'."
+    $requestError = $_
 }
 
 $statusCode = $null
-if ($negativeError.Exception.PSObject.Properties.Name -contains 'ResponseStatusCode') {
-    $statusCode = [int]$negativeError.Exception.ResponseStatusCode
+$errorText = ''
+if ($requestError) {
+    if ($requestError.Exception.PSObject.Properties.Name -contains 'ResponseStatusCode') {
+        $statusCode = [int]$requestError.Exception.ResponseStatusCode
+    }
+    $errorText = @(
+        [string]$requestError.Exception.Message
+        [string]$requestError.ErrorDetails.Message
+    ) -join ' '
 }
-$errorText = @(
-    [string]$negativeError.Exception.Message
-    [string]$negativeError.ErrorDetails.Message
-) -join ' '
 
-if ($statusCode -ne 403 -and $errorText -notmatch '403|ErrorAccessDenied|Authorization_RequestDenied|AccessDenied') {
-    throw "The negative mailbox request failed, but not with an authorization denial. Status: '$statusCode'. Error: $errorText"
+if ($ExpectedAccess -eq 'Allowed') {
+    if (-not $requestSucceeded) {
+        throw "Mailbox '$Mailbox' was expected to be allowed, but the request failed. Status: '$statusCode'. Error: $errorText"
+    }
+    if ($null -eq $response) {
+        throw "Mailbox '$Mailbox' was expected to be allowed, but the request returned no response object."
+    }
+    $actualAccess = 'Allowed'
+}
+else {
+    if ($requestSucceeded) {
+        throw "Authorization validation failed: mailbox '$Mailbox' was expected to be denied, but Microsoft Graph allowed the request. The Graph test ran correctly; the expected mailbox restriction is not yet enforced. Do not run Cleanup. Verify that no broad Entra mailbox permission remains, allow recent policy or App RBAC changes to propagate, obtain a new token, and retry."
+    }
+    if ($statusCode -ne 403 -and $errorText -notmatch '403|ErrorAccessDenied|Authorization_RequestDenied|AccessDenied') {
+        throw "Mailbox '$Mailbox' was expected to be denied, but the request failed for another reason. Status: '$statusCode'. Error: $errorText"
+    }
+    $actualAccess = 'Denied'
 }
 
-Write-Host "Unauthorized mailbox test was correctly denied for '$NegativeMailbox'." -ForegroundColor Green
+Write-Host "Mailbox '$Mailbox' matched expected access '$ExpectedAccess'." -ForegroundColor Green
 Disconnect-MgGraph | Out-Null
 
 $result = [pscustomobject]@{
     AppId = $AppId
-    PositiveMailbox = $PositiveMailbox
-    PositiveResult = 'Succeeded'
-    NegativeMailbox = $NegativeMailbox
-    NegativeResult = 'Denied'
+    Mailbox = $Mailbox
+    ExpectedAccess = $ExpectedAccess
+    ActualAccess = $actualAccess
     TestedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
 }
 
 $safeAppId = $AppId -replace '[^a-zA-Z0-9-]', '_'
-$resultPath = Join-Path $OutputDirectory ("live-validation-{0}-{1}.json" -f $safeAppId, (Get-Date -Format 'yyyyMMdd-HHmmss'))
+$safeMailbox = $Mailbox -replace '[^a-zA-Z0-9-]', '_'
+$resultPath = Join-Path $OutputDirectory ("live-validation-{0}-{1}-{2}.json" -f $safeAppId, $safeMailbox, (Get-Date -Format 'yyyyMMdd-HHmmss'))
 Write-ToolkitJson -InputObject $result -Path $resultPath
 
 Write-Host "Validation result: $resultPath" -ForegroundColor Green

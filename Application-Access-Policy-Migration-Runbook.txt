@@ -243,6 +243,30 @@ Required result:
 These are Exchange configuration checks. Test actual mailbox operations separately
 through the application's normal test procedure before Cleanup.
 
+OPTIONAL DIRECT GRAPH MAILBOX TEST (RUN ONE MAILBOX AT A TIME):
+
+.\04-Test-GraphMailboxAccess.ps1 `
+    -TenantId $TenantId `
+    -AppId $state.Application.AppId `
+    -Mailbox 'vader@kytigges.com' `
+    -ExpectedAccess Allowed `
+    -CertificatePemPath $CertificatePemPath `
+    -PrivateKeyPath $PrivateKeyPath
+
+.\04-Test-GraphMailboxAccess.ps1 `
+    -TenantId $TenantId `
+    -AppId $state.Application.AppId `
+    -Mailbox 'kevin@kytigges.com' `
+    -ExpectedAccess Denied `
+    -CertificatePemPath $CertificatePemPath `
+    -PrivateKeyPath $PrivateKeyPath
+
+Run these as two separate commands. If the denied test says the request succeeded,
+the Graph call worked but live authorization did not enforce the expected scope.
+This is a failed authorization result, not a script malfunction. Stop, do not run
+Cleanup, verify that broad Entra Mail.Read is absent, wait for propagation, obtain
+a new token, and retry the denied-mailbox command.
+
 Do not clean up the legacy policy unless both results are correct and the observation period is complete.
 
 STEP 9 - REMOVE THE LEGACY POLICY

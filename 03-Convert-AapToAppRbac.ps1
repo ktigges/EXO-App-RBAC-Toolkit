@@ -46,7 +46,7 @@ param(
     [switch]$AutoRollbackOnValidationFailure,
     [switch]$ObservationValidated,
     [switch]$Execute,
-    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [ValidateSet('Auto', 'Browser')]
     [string]$AuthenticationMode = 'Auto',
     [string]$StatePath
 )
@@ -234,23 +234,42 @@ function Assert-LiveValidationInputs {
         throw "Live validation script '$LiveValidationScriptPath' was not found."
     }
 
-    $standardParameters = @('TenantId', 'AppId', 'PositiveMailbox', 'NegativeMailbox')
-    $providedParameters = @($standardParameters) + @($LiveValidationParameters.Keys)
     $command = Get-Command -Name $LiveValidationScriptPath -ErrorAction Stop
-    $missingParameters = foreach ($parameter in $command.Parameters.Values) {
-        $isMandatory = @($parameter.Attributes |
-                Where-Object {
-                    $_ -is [System.Management.Automation.ParameterAttribute] -and
-                    $_.Mandatory
-                }).Count -gt 0
+    $standardParameters = @('TenantId', 'AppId')
+    if ($command.Parameters.ContainsKey('Mailbox') -and $command.Parameters.ContainsKey('ExpectedAccess')) {
+        $standardParameters += @('Mailbox', 'ExpectedAccess')
+    }
+    elseif ($command.Parameters.ContainsKey('PositiveMailbox') -and $command.Parameters.ContainsKey('NegativeMailbox')) {
+        $standardParameters += @('PositiveMailbox', 'NegativeMailbox')
+    }
+    $providedParameters = @($standardParameters) + @($LiveValidationParameters.Keys)
 
-        if ($isMandatory -and $providedParameters -notcontains $parameter.Name) {
-            $parameter.Name
-        }
+    $unknownParameters = @($LiveValidationParameters.Keys |
+            Where-Object { -not $command.Parameters.ContainsKey([string]$_) })
+    if ($unknownParameters.Count -gt 0) {
+        throw "Live validation script does not define parameters: $($unknownParameters -join ', ')."
     }
 
-    if (@($missingParameters).Count -gt 0) {
-        throw "Live validation script is missing required parameters: $($missingParameters -join ', '). Supply them through -LiveValidationParameters."
+    $matchingParameterSets = @($command.ParameterSets | Where-Object {
+            $parameterSet = $_
+            $parameterNames = @($parameterSet.Parameters.Name)
+            $unsupportedParameters = @($LiveValidationParameters.Keys |
+                    Where-Object { $parameterNames -notcontains [string]$_ })
+            $missingParameters = @($parameterSet.Parameters |
+                    Where-Object IsMandatory |
+                    Where-Object { $providedParameters -notcontains $_.Name })
+
+            $unsupportedParameters.Count -eq 0 -and $missingParameters.Count -eq 0
+        })
+
+    if ($matchingParameterSets.Count -eq 0) {
+        $parameterSetRequirements = @($command.ParameterSets | ForEach-Object {
+                $requiredParameters = @($_.Parameters |
+                        Where-Object IsMandatory |
+                        ForEach-Object Name) -join ', '
+                "'$($_.Name)' requires: $requiredParameters"
+            }) -join '; '
+        throw "Live validation parameters do not satisfy a complete parameter set. $parameterSetRequirements"
     }
 }
 
@@ -261,36 +280,52 @@ function Invoke-LiveValidation {
 
     Assert-LiveValidationInputs
     $hostExecutable = (Get-Process -Id $PID).Path
-    $argumentList = @(
-        '-NoProfile',
-        '-File',
-        $LiveValidationScriptPath,
-        '-TenantId',
-        $TenantId,
-        '-AppId',
-        $AppId,
-        '-PositiveMailbox',
-        $PositiveMailbox,
-        '-NegativeMailbox',
-        $NegativeMailbox
-    )
-
-    foreach ($key in $LiveValidationParameters.Keys) {
-        $argumentList += "-$key"
-        $value = $LiveValidationParameters[$key]
-        if ($value -is [bool]) {
-            if ($value) {
-                continue
-            }
-            throw "Boolean live-validation parameter '$key' is false. Omit false switch parameters."
-        }
-        $argumentList += [string]$value
+    $command = Get-Command -Name $LiveValidationScriptPath -ErrorAction Stop
+    $validationCases = if ($command.Parameters.ContainsKey('Mailbox') -and $command.Parameters.ContainsKey('ExpectedAccess')) {
+        @(
+            @{ Mailbox = $PositiveMailbox; ExpectedAccess = 'Allowed' },
+            @{ Mailbox = $NegativeMailbox; ExpectedAccess = 'Denied' }
+        )
+    }
+    else {
+        @(
+            @{ PositiveMailbox = $PositiveMailbox; NegativeMailbox = $NegativeMailbox }
+        )
     }
 
-    & $hostExecutable @argumentList | Out-Host
-    $validationExitCode = $LASTEXITCODE
-    if ($validationExitCode -ne 0) {
-        throw "Live validation script exited with code $validationExitCode."
+    foreach ($validationCase in $validationCases) {
+        $argumentList = @(
+            '-NoProfile',
+            '-File',
+            $LiveValidationScriptPath,
+            '-TenantId',
+            $TenantId,
+            '-AppId',
+            $AppId
+        )
+
+        foreach ($key in $validationCase.Keys) {
+            $argumentList += "-$key"
+            $argumentList += [string]$validationCase[$key]
+        }
+
+        foreach ($key in $LiveValidationParameters.Keys) {
+            $argumentList += "-$key"
+            $value = $LiveValidationParameters[$key]
+            if ($value -is [bool]) {
+                if ($value) {
+                    continue
+                }
+                throw "Boolean live-validation parameter '$key' is false. Omit false switch parameters."
+            }
+            $argumentList += [string]$value
+        }
+
+        & $hostExecutable @argumentList | Out-Host
+        $validationExitCode = $LASTEXITCODE
+        if ($validationExitCode -ne 0) {
+            throw "Live validation script exited with code $validationExitCode."
+        }
     }
 
     return $true
@@ -482,8 +517,21 @@ $authorizationTests = Assert-AuthorizationTests
 
 if ($Phase -eq 'Cutover') {
     if (-not $SkipPropagationWait) {
-        $preparedAt = [datetime]::Parse([string]$state.PreparedAtUtc).ToUniversalTime()
-        $ageMinutes = ((Get-Date).ToUniversalTime() - $preparedAt).TotalMinutes
+        $preparedAt = if ($state.PreparedAtUtc -is [datetime]) {
+            ([datetime]$state.PreparedAtUtc).ToUniversalTime()
+        }
+        else {
+            [datetime]::Parse(
+                [string]$state.PreparedAtUtc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).ToUniversalTime()
+        }
+        $currentUtc = (Get-Date).ToUniversalTime()
+        $ageMinutes = ($currentUtc - $preparedAt).TotalMinutes
+        if ($ageMinutes -lt 0) {
+            throw "The Prepare timestamp '$($preparedAt.ToString('o'))' is later than the current UTC time '$($currentUtc.ToString('o'))'. Verify the system clock and migration state file before Cutover."
+        }
         if ($ageMinutes -lt $MinimumPreparationMinutes) {
             throw "The App RBAC assignment was prepared $([math]::Floor($ageMinutes)) minutes ago. Wait at least $MinimumPreparationMinutes minutes or explicitly use -SkipPropagationWait after independent validation."
         }
@@ -506,12 +554,27 @@ if ($Phase -eq 'Cutover') {
         "Record cutover state in '$StatePath'."
     )
     if ($LiveValidationScriptPath) {
-        $plannedChanges += "Execute live validation script '$LiveValidationScriptPath'."
+        $plannedChanges += "Execute live validation script '$LiveValidationScriptPath' before permission removal as a safety preflight."
+        $plannedChanges += "Execute live validation script '$LiveValidationScriptPath' again after permission removal."
     }
 
     if (-not $Execute) {
         Assert-ExecutionApproved -Execute:$false -PlannedChanges $plannedChanges
         return
+    }
+
+    if ($LiveValidationScriptPath) {
+        Write-Host 'Running pre-cutover live validation against the existing authorization path...' -ForegroundColor Cyan
+        try {
+            $null = Invoke-LiveValidation
+        }
+        catch {
+            throw "Pre-cutover live validation failed. No permissions were changed. Resolve existing authorization and propagation before retrying Cutover. $($_.Exception.Message)"
+        }
+
+        $state | Add-Member -NotePropertyName PreCutoverValidationAtUtc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+        Write-ToolkitJson -InputObject $state -Path $StatePath
+        Write-Host 'Pre-cutover live validation passed. Continuing with permission removal.' -ForegroundColor Green
     }
 
     $removedPermissionState = [ordered]@{
@@ -561,6 +624,16 @@ if ($Phase -eq 'Cutover') {
                     -PrincipalId $servicePrincipal.Id `
                     -ResourceId $entraPermissionAssignment.ResourceId `
                     -AppRoleId $entraPermissionAssignment.AppRoleId | Out-Null
+
+                $rollbackAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+                Write-Host "Rollback complete. Entra permission '$EntraPermissionValue' was restored." -ForegroundColor Green
+                try {
+                    $state | Add-Member -NotePropertyName LastRollbackAtUtc -NotePropertyValue $rollbackAtUtc -Force
+                    Write-ToolkitJson -InputObject $state -Path $StatePath
+                }
+                catch {
+                    Write-Warning "The permission was restored, but rollback state could not be written to '$StatePath': $($_.Exception.Message)"
+                }
             }
             catch {
                 Write-Error @"

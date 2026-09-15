@@ -34,3 +34,4 @@ scope-members.csv
 Thumbs.db
 Desktop.ini
 .DS_Store
+**/Output.test/

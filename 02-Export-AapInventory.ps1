@@ -14,7 +14,7 @@ param(
     [string]$MailboxFilter,
     [ValidateRange(0, 100000)]
     [int]$MaxMailboxes = 0,
-    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [ValidateSet('Auto', 'Browser')]
     [string]$AuthenticationMode = 'Auto'
 )
 
@@ -383,13 +383,14 @@ foreach ($policy in $policies) {
         if ($exchangeServicePrincipal) {
             $assignments = @(Get-ManagementRoleAssignment -RoleAssignee $exchangeServicePrincipal.ObjectId)
             foreach ($assignment in $assignments) {
+                $administrativeUnitScopeProperty = $assignment.PSObject.Properties['RecipientAdministrativeUnitScope']
                 $existingRbacRows.Add([pscustomobject]@{
                         AppId = $appId
                         ExchangeServicePrincipalIdentity = [string]$exchangeServicePrincipal.ObjectId
                         AssignmentName = [string]$assignment.Name
                         Role = [string]$assignment.Role
                         CustomResourceScope = [string]$assignment.CustomResourceScope
-                        RecipientAdministrativeUnitScope = [string]$assignment.RecipientAdministrativeUnitScope
+                    RecipientAdministrativeUnitScope = if ($administrativeUnitScopeProperty) { [string]$administrativeUnitScopeProperty.Value } else { $null }
                         EffectiveUserName = [string]$assignment.EffectiveUserName
                     })
             }
@@ -533,9 +534,13 @@ $inventory = [ordered]@{
     }
 
 Write-ToolkitJson -InputObject $inventory -Path (Join-Path $OutputDirectory 'inventory.json')
+$dashboardTemplatePath = Join-Path $PSScriptRoot 'Output\InventoryReviewDashboard.template.html'
+if (-not (Test-Path -LiteralPath $dashboardTemplatePath -PathType Leaf)) {
+    $dashboardTemplatePath = Join-Path $PSScriptRoot 'InventoryReviewDashboard.template.html'
+}
 Write-InventoryReviewDashboard `
     -Inventory $inventory `
-    -TemplatePath (Join-Path $PSScriptRoot 'InventoryReviewDashboard.template.html') `
+    -TemplatePath $dashboardTemplatePath `
     -OutputPath $dashboardPath
 
 Write-Host ''

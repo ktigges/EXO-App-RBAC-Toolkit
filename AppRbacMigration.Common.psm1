@@ -21,6 +21,25 @@ function Assert-RequiredModule {
     }
 }
 
+function Assert-RequiredModuleVersion {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter(Mandatory)]
+        [version]$RequiredVersion
+    )
+
+    $module = Get-Module -ListAvailable -Name $Name |
+        Where-Object Version -eq $RequiredVersion |
+        Select-Object -First 1
+
+    if (-not $module) {
+        throw "Required module '$Name' version $RequiredVersion is not installed. Run: Install-Module $Name -RequiredVersion $RequiredVersion -Scope CurrentUser"
+    }
+}
+
 function Connect-AppRbacServices {
     [CmdletBinding()]
     param(
@@ -33,29 +52,12 @@ function Connect-AppRbacServices {
             'Directory.Read.All'
         ),
 
-        [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+        [ValidateSet('Auto', 'Browser')]
         [string]$AuthenticationMode = 'Auto',
 
         [switch]$ExchangeOnly,
         [switch]$GraphOnly
     )
-
-    $isWindowsPlatform = if ($PSVersionTable.PSEdition -eq 'Desktop') {
-        $true
-    }
-    else {
-        [bool]$IsWindows
-    }
-
-    if ($AuthenticationMode -eq 'Browser' -and -not $isWindowsPlatform) {
-        throw "Browser authentication isn't supported by the installed Exchange Online authentication stack on this operating system. Use -AuthenticationMode DeviceCode, or omit the parameter to use the cross-platform Auto default."
-    }
-
-    $useDeviceCode = switch ($AuthenticationMode) {
-        'DeviceCode' { $true }
-        'Browser' { $false }
-        default { -not $isWindowsPlatform }
-    }
 
     if (-not $ExchangeOnly) {
         Assert-RequiredModule -Name Microsoft.Graph.Authentication -MinimumVersion 2.0
@@ -68,24 +70,17 @@ function Connect-AppRbacServices {
             Scopes    = $GraphScopes
             NoWelcome = $true
         }
-        if ($useDeviceCode) {
-            $graphParameters.UseDeviceCode = $true
-        }
         Connect-MgGraph @graphParameters
     }
 
     if (-not $GraphOnly) {
-        Assert-RequiredModule -Name ExchangeOnlineManagement -MinimumVersion 3.4
-        Import-Module ExchangeOnlineManagement
+        $requiredExchangeOnlineManagementVersion = [version]'3.6.0'
+        Write-Warning "Exchange Online operations require ExchangeOnlineManagement $requiredExchangeOnlineManagementVersion and interactive browser authentication. Versions 3.7.0 and later are not supported by this toolkit configuration."
+        Assert-RequiredModuleVersion -Name ExchangeOnlineManagement -RequiredVersion $requiredExchangeOnlineManagementVersion
+        Import-Module ExchangeOnlineManagement -RequiredVersion $requiredExchangeOnlineManagementVersion -Force
 
         $exchangeParameters = @{
             ShowBanner = $false
-        }
-        if ($useDeviceCode) {
-            $exchangeParameters.Device = $true
-        }
-        elseif ((Get-Command Connect-ExchangeOnline).Parameters.ContainsKey('DisableWAM')) {
-            $exchangeParameters.DisableWAM = $true
         }
         Connect-ExchangeOnline @exchangeParameters
 
@@ -438,10 +433,12 @@ function Assert-ExecutionApproved {
     Write-Host ''
     Write-Host 'PREVIEW ONLY - no tenant changes were made.' -ForegroundColor Yellow
     Write-Host ''
-    foreach ($change in $PlannedChanges) {
-        Write-Host " - $change"
-    }
+    Write-Host 'Planned changes:' -ForegroundColor Cyan
     Write-Host ''
+    for ($changeIndex = 0; $changeIndex -lt $PlannedChanges.Count; $changeIndex++) {
+        Write-Host (" {0}. {1}" -f ($changeIndex + 1), $PlannedChanges[$changeIndex])
+        Write-Host ''
+    }
     Write-Host 'Run again with -Execute after reviewing the plan.' -ForegroundColor Yellow
     return
 }

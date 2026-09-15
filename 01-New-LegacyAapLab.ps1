@@ -24,7 +24,7 @@ param(
     [int]$CertificateValidDays = 30,
     [switch]$CreateSharedMailboxes,
     [switch]$Execute,
-    [ValidateSet('Auto', 'Browser', 'DeviceCode')]
+    [ValidateSet('Auto', 'Browser')]
     [string]$AuthenticationMode = 'Auto',
     [string]$OutputDirectory = (Join-Path (Join-Path $PSScriptRoot 'Output') 'lab')
 )
@@ -41,7 +41,7 @@ if (-not $ScopeGroupPrimarySmtpAddress) {
 $plannedChanges = @(
     "Create a single-tenant Entra application named '$AppDisplayName'.",
     'Create its Entra service principal.',
-    "Create a $CertificateValidDays-day self-signed certificate in Cert:\CurrentUser\My and upload the public key.",
+    "Create a $CertificateValidDays-day self-signed certificate and private key with OpenSSL and upload the public key.",
     'Grant and admin-consent Microsoft Graph Mail.Read application permission.',
     "Create or reuse the mail-enabled security group '$ScopeGroupPrimarySmtpAddress'.",
     'Add the authorized mailboxes as direct group members.',
@@ -59,15 +59,11 @@ if (-not $Execute) {
     return
 }
 
-Assert-WindowsCertificateStore -Operation 'Creating the legacy Application Access Policy lab'
-
 Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
     'Application.ReadWrite.All',
     'AppRoleAssignment.ReadWrite.All',
     'Directory.ReadWrite.All'
 ) -AuthenticationMode $AuthenticationMode
-
-New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 
 $escapedDisplayName = ConvertTo-ODataLiteral -Value $AppDisplayName
 $existingApps = @(Get-MgApplication -Filter "displayName eq '$escapedDisplayName'" -Property @('id', 'appId', 'displayName') -All)
@@ -75,19 +71,72 @@ if ($existingApps.Count -gt 0) {
     throw "An Entra application named '$AppDisplayName' already exists. Use a unique -AppDisplayName or remove the previous lab."
 }
 
+$openSslCommand = Get-Command openssl -CommandType Application -All -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if (-not $openSslCommand) {
+    throw 'OpenSSL is required to create the lab certificate. Install OpenSSL and ensure openssl is available on PATH.'
+}
+$openSslPath = $openSslCommand.Path
+
+Write-Host "Detected OpenSSL executable: $openSslPath" -ForegroundColor Cyan
+$openSslOverride = Read-Host 'Press Enter to use this executable, or enter a different OpenSSL path'
+if (-not [string]::IsNullOrWhiteSpace($openSslOverride)) {
+    $replacementOpenSslCommand = Get-Command `
+        -Name $openSslOverride.Trim() `
+        -CommandType Application `
+        -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $replacementOpenSslCommand) {
+        throw "OpenSSL executable was not found at '$($openSslOverride.Trim())'."
+    }
+    $openSslPath = $replacementOpenSslCommand.Path
+}
+Write-Host "Using OpenSSL executable: $openSslPath" -ForegroundColor Green
+
+New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
+
+$privateKeyPath = Join-Path $OutputDirectory 'AppRbacMigrationLab.key.pem'
+$certificatePemPath = Join-Path $OutputDirectory 'AppRbacMigrationLab.cert.pem'
+$publicCertificatePath = Join-Path $OutputDirectory 'AppRbacMigrationLab.cer'
+$openSslCommonName = $AppDisplayName.Replace('\', '\\').Replace('/', '\/')
+
+Write-Host 'Creating a short-lived lab certificate with OpenSSL...' -ForegroundColor Cyan
+& $openSslPath req `
+    -x509 `
+    -newkey rsa:2048 `
+    -sha256 `
+    -nodes `
+    -keyout $privateKeyPath `
+    -out $certificatePemPath `
+    -days $CertificateValidDays `
+    -subj "/CN=$openSslCommonName"
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSSL failed to create the lab certificate. Exit code: $LASTEXITCODE"
+}
+
+& $openSslPath x509 `
+    -in $certificatePemPath `
+    -outform DER `
+    -out $publicCertificatePath
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSSL failed to export the public certificate. Exit code: $LASTEXITCODE"
+}
+
+if ($PSVersionTable.Platform -eq 'Unix') {
+    & chmod 600 $privateKeyPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to restrict permissions on private key '$privateKeyPath'. Exit code: $LASTEXITCODE"
+    }
+}
+
+$certificate = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile(
+    $certificatePemPath,
+    $privateKeyPath
+)
+
 Write-Host "Creating Entra application '$AppDisplayName'..." -ForegroundColor Cyan
 $application = New-MgApplication -DisplayName $AppDisplayName -SignInAudience 'AzureADMyOrg'
 $servicePrincipal = New-MgServicePrincipal -AppId $application.AppId
-
-Write-Host 'Creating a short-lived lab certificate...' -ForegroundColor Cyan
-$certificate = New-SelfSignedCertificate `
-    -Subject "CN=$AppDisplayName" `
-    -CertStoreLocation 'Cert:\CurrentUser\My' `
-    -KeyAlgorithm RSA `
-    -KeyLength 2048 `
-    -HashAlgorithm SHA256 `
-    -KeyExportPolicy NonExportable `
-    -NotAfter (Get-Date).AddDays($CertificateValidDays)
 
 $keyCredential = @{
     Type          = 'AsymmetricX509Cert'
@@ -99,8 +148,6 @@ $keyCredential = @{
 }
 
 Update-MgApplication -ApplicationId $application.Id -KeyCredentials @($keyCredential)
-$publicCertificatePath = Join-Path $OutputDirectory 'AppRbacMigrationLab.cer'
-Export-Certificate -Cert $certificate -FilePath $publicCertificatePath -Force | Out-Null
 
 Write-Host 'Granting Microsoft Graph Mail.Read application permission...' -ForegroundColor Cyan
 $graphServicePrincipal = Get-MgServicePrincipal `
@@ -238,7 +285,9 @@ $state = [ordered]@{
         NotBefore = $certificate.NotBefore.ToUniversalTime().ToString('o')
         NotAfter = $certificate.NotAfter.ToUniversalTime().ToString('o')
         PublicCertificatePath = $publicCertificatePath
-        StoreLocation = 'Cert:\CurrentUser\My'
+        CertificatePemPath = $certificatePemPath
+        PrivateKeyPath = $privateKeyPath
+        Provider = 'OpenSSL'
     }
     GraphPermission = [ordered]@{
         ResourceAppId = [string]$graphServicePrincipal.AppId
@@ -275,4 +324,4 @@ Write-Host "Certificate thumbprint: $($certificate.Thumbprint)"
 Write-Host "Scope group: $ScopeGroupPrimarySmtpAddress"
 Write-Host "State file: $statePath"
 Write-Host ''
-Write-Host 'The certificate private key remains non-exportable in the current user certificate store.' -ForegroundColor Yellow
+Write-Host "Protect the private key file: $privateKeyPath" -ForegroundColor Yellow

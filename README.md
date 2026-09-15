@@ -1,3 +1,84 @@
+# IMPORTANT: USE EXCHANGEONLINEMANAGEMENT 3.6.0 ONLY
+
+**DO NOT USE EXCHANGEONLINEMANAGEMENT 3.7.0+ WITH THIS TOOLKIT. REMOVE ALL 3.7+ VERSIONS AND INSTALL 3.6.0 EXACTLY BEFORE CONTINUING.**
+
+Version 3.7.0 introduced a different authentication stack that is not supported by this toolkit's macOS browser/MFA workflow. Run the following commands in a fresh PowerShell session:
+
+```powershell
+Disconnect-ExchangeOnline -Confirm:$false -ErrorAction SilentlyContinue
+Remove-Module ExchangeOnlineManagement -Force -ErrorAction SilentlyContinue
+
+$unsupportedVersions = @(
+    Get-Module ExchangeOnlineManagement -ListAvailable |
+        Where-Object Version -GE ([version]'3.7.0') |
+        Select-Object -ExpandProperty Version -Unique
+)
+
+foreach ($version in $unsupportedVersions) {
+    Write-Host "Removing ExchangeOnlineManagement $version..." -ForegroundColor Yellow
+    Uninstall-Module ExchangeOnlineManagement `
+        -RequiredVersion $version `
+        -Force `
+        -ErrorAction Stop
+}
+
+Install-Module ExchangeOnlineManagement `
+    -RequiredVersion 3.6.0 `
+    -Scope CurrentUser `
+    -Force
+```
+
+Close that PowerShell session, open a new one, and verify the installation before running any toolkit script:
+
+```powershell
+# Run this verification in a fresh PowerShell session.
+$unsupportedVersions = @(
+    Get-Module ExchangeOnlineManagement -ListAvailable |
+        Where-Object Version -GE ([version]'3.7.0')
+)
+if ($unsupportedVersions.Count -gt 0) {
+    throw "ExchangeOnlineManagement 3.7.0 or later is still installed. Remove it before continuing."
+}
+
+Import-Module ExchangeOnlineManagement -RequiredVersion 3.6.0 -Force
+$loadedVersion = (Get-Module ExchangeOnlineManagement).Version
+if ($loadedVersion -ne [version]'3.6.0') {
+    throw "Expected ExchangeOnlineManagement 3.6.0, but loaded $loadedVersion."
+}
+
+Write-Host "ExchangeOnlineManagement $loadedVersion is ready." -ForegroundColor Green
+```
+
+**EXPECTED RESULT: `ExchangeOnlineManagement 3.6.0 is ready.` DO NOT CONTINUE IF THE CHECK THROWS AN ERROR.**
+
+# IMPORTANT: OPENSSL REQUIREMENTS
+
+**SCRIPT 01 REQUIRES OPENSSL ON BOTH MACOS AND WINDOWS. WINDOWS DOES NOT INCLUDE OPENSSL BY DEFAULT. INSTALL OPENSSL SEPARATELY AND ENSURE `openssl` (`openssl.exe` ON WINDOWS) IS AVAILABLE ON `PATH` BEFORE RUNNING SCRIPT 01.**
+
+Script 01 uses OpenSSL to generate its PEM private key and certificate. On Windows, install a trusted OpenSSL distribution and add the directory containing `openssl.exe` to the user or system `PATH`. On macOS, install OpenSSL if `openssl` is not already available. Open a new PowerShell session after changing `PATH`, then verify:
+
+```powershell
+$openSslCommand = Get-Command openssl `
+    -CommandType Application `
+    -ErrorAction SilentlyContinue
+
+if (-not $openSslCommand) {
+    throw "OpenSSL was not found on PATH. Install it and open a new PowerShell session before running script 01."
+}
+
+Write-Host "OpenSSL executable: $($openSslCommand.Path)" -ForegroundColor Green
+& $openSslCommand.Path version
+if ($LASTEXITCODE -ne 0) {
+    throw "OpenSSL was found but did not run successfully."
+}
+```
+
+**DO NOT CONTINUE WITH SCRIPT 01 UNLESS THE COMMAND PRINTS AN OPENSSL EXECUTABLE PATH AND VERSION.**
+
+- Script 01 requires the OpenSSL executable on `PATH` on macOS and Windows.
+- Scripts 02 and 03 do not generate certificates and do not require OpenSSL.
+- Script 05 is Windows-only and uses the Windows certificate store with `New-SelfSignedCertificate`; it does not require OpenSSL.
+
 # Application Access Policy to Exchange Online App RBAC Toolkit
 
 ## Microsoft change this toolkit addresses
@@ -17,20 +98,20 @@ Tenant-changing scripts run in preview mode unless `-Execute` is supplied. `02-E
 
 ## Prerequisites
 
-- A supported Windows workstation or Windows Server
-- PowerShell 7.x
-- ExchangeOnlineManagement 3.4 or later
+- PowerShell 7.4 or later
+- ExchangeOnlineManagement 3.6.0 exactly; versions 3.7.0 and later use a different authentication stack and are not supported by this toolkit configuration
 - Microsoft Graph PowerShell 2.0 or later
+- OpenSSL on `PATH` when running script 01
 - Rights to read Entra applications, Exchange policies, groups, and mailboxes during discovery
 - Approved rights to create Exchange service-principal pointers, Management Scopes, and role assignments and to remove Entra grants during migration
 
 ```powershell
-Install-Module ExchangeOnlineManagement -Scope CurrentUser
+Install-Module ExchangeOnlineManagement -RequiredVersion 3.6.0 -Scope CurrentUser
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 Install-Module Microsoft.Graph.Applications -Scope CurrentUser
 ```
 
-Run this toolkit on Windows with PowerShell 7.x. Scripts 01, 02, 03, and 05 accept `-AuthenticationMode Auto`, `Browser`, or `DeviceCode`. On Windows, `Auto` uses interactive browser authentication and bypasses the Exchange Online Web Account Manager broker. If interactive authentication is unavailable, add `-AuthenticationMode DeviceCode`.
+Scripts 01, 02, 03, and 05 accept `-AuthenticationMode Auto` or `Browser`. Both use interactive browser authentication. Device-code authentication is not supported by this toolkit configuration. Every Exchange Online connection checks for and imports version 3.6.0 exactly; installing a newer version alongside 3.6.0 does not cause the newer version to be loaded.
 
 ## Production migration workflow
 
@@ -215,13 +296,6 @@ $app = @{
     PositiveMailbox = "finance-inbox@contoso.com"
     NegativeMailbox = "executive@contoso.com"
 }
-
-$liveTest = @{
-    LiveValidationScriptPath = ".\04-Test-GraphMailboxAccess.ps1"
-    LiveValidationParameters = @{
-        CertificateThumbprint = "CERTIFICATE_THUMBPRINT"
-    }
-}
 ```
 
 #### Preview and execute Prepare
@@ -232,7 +306,7 @@ Preview first. The preview reads and validates the current configuration but cha
 .\03-Convert-AapToAppRbac.ps1 @app -Phase Prepare
 ```
 
-Then create the App RBAC configuration:
+Then run Prepare with `-Execute` to create the App RBAC configuration:
 
 ```powershell
 .\03-Convert-AapToAppRbac.ps1 @app -Phase Prepare -Execute
@@ -240,29 +314,65 @@ Then create the App RBAC configuration:
 
 The old Entra `Mail.Read` permission and legacy policy remain active. Script 03 saves this app's migration state under `Output\migrations`.
 
-### Step 4: Cut over and validate the application
+#### Validate after Prepare
 
-After waiting at least two hours, preview and execute Cutover:
+Wait at least two hours for App RBAC propagation. First confirm that the existing legacy policy still calculates the expected access:
 
 ```powershell
-.\03-Convert-AapToAppRbac.ps1 @app @liveTest `
-    -Phase Cutover -AutoRollbackOnValidationFailure
+Test-ApplicationAccessPolicy `
+    -Identity $app.PositiveMailbox `
+    -AppId $app.AppId
 
-.\03-Convert-AapToAppRbac.ps1 @app @liveTest `
-    -Phase Cutover -AutoRollbackOnValidationFailure -Execute
+Test-ApplicationAccessPolicy `
+    -Identity $app.NegativeMailbox `
+    -AppId $app.AppId
 ```
 
-Cutover removes the broad Entra `Mail.Read` permission and runs script 04 as the application using a newly issued token. The test must read `finance-inbox@contoso.com` and be denied access to `executive@contoso.com`. If the test fails, automatic rollback restores the Entra permission. Also run the application's normal workload test for any endpoints or permissions not covered by script 04.
+The positive mailbox must be `Granted` and the negative mailbox must be `Denied`. Then confirm that the new App RBAC assignment calculates the same scope:
+
+```powershell
+Test-ServicePrincipalAuthorization `
+    -Identity $app.AppId `
+    -Resource $app.PositiveMailbox |
+    Where-Object RoleName -eq $app.ApplicationRoleName
+
+Test-ServicePrincipalAuthorization `
+    -Identity $app.AppId `
+    -Resource $app.NegativeMailbox |
+    Where-Object RoleName -eq $app.ApplicationRoleName
+```
+
+The positive mailbox must show `InScope` as `True`; the negative mailbox must show `InScope` as `False`. These commands evaluate Exchange configuration and do not call Microsoft Graph. Perform any application-level mailbox test separately through the application's normal test procedure.
+
+Do not continue unless the legacy policy and App RBAC scope checks return the expected results.
+
+### Step 4: Cut over and validate the application
+
+After completing the post-Prepare checks, preview Cutover:
+
+```powershell
+.\03-Convert-AapToAppRbac.ps1 @app `
+    -Phase Cutover -AcknowledgeManualLiveValidation
+```
+
+Then run Cutover with `-Execute`:
+
+```powershell
+.\03-Convert-AapToAppRbac.ps1 @app `
+    -Phase Cutover -AcknowledgeManualLiveValidation -Execute
+```
+
+Cutover removes the broad Entra `Mail.Read` permission. `-AcknowledgeManualLiveValidation` confirms that the application's normal mailbox test will be performed separately. This workflow does not run the dual-mailbox Graph test or automatic validation rollback.
 
 ### Step 5: Observe and clean up
 
 After the application owner confirms normal operation during the observation period, preview and execute Cleanup:
 
 ```powershell
-.\03-Convert-AapToAppRbac.ps1 @app @liveTest `
+.\03-Convert-AapToAppRbac.ps1 @app `
     -Phase Cleanup -ObservationValidated
 
-.\03-Convert-AapToAppRbac.ps1 @app @liveTest `
+.\03-Convert-AapToAppRbac.ps1 @app `
     -Phase Cleanup -ObservationValidated -Execute
 ```
 
@@ -270,38 +380,54 @@ Cleanup removes the legacy Application Access Policy and leaves App RBAC as the 
 
 > This automated example supports an app with one policy-controlled mailbox permission. Script 03 stops before changes when the app has multiple controlled permissions because those roles require one coordinated migration design.
 
-## Production live-validation reference
+## Production validation reference
 
-`-EvaluateEffectiveAccess` in script 02 does **not** test the updated application. It records the current legacy Application Access Policy result and is useful only as a before-migration baseline.
+`-EvaluateEffectiveAccess` in script 02 records the current legacy Application Access Policy result and is useful as a before-migration baseline.
 
-Use `04-Test-GraphMailboxAccess.ps1` after Cutover to test the updated application. This script:
+Use separate `Test-ServicePrincipalAuthorization` calls before and after Cutover:
 
-1. Authenticates as the application using its App ID and certificate private key, which obtains a new token after the permission change.
-2. Calls Microsoft Graph to read one message from a mailbox that should be inside the new App RBAC scope.
-3. Calls the same Graph endpoint for a mailbox that should be outside the scope and requires an access-denied response.
-4. Saves the successful result under `Output\live-validation`.
+```powershell
+Test-ServicePrincipalAuthorization `
+    -Identity $app.AppId `
+    -Resource $app.PositiveMailbox |
+    Where-Object RoleName -eq $app.ApplicationRoleName
+
+Test-ServicePrincipalAuthorization `
+    -Identity $app.AppId `
+    -Resource $app.NegativeMailbox |
+    Where-Object RoleName -eq $app.ApplicationRoleName
+```
+
+The positive mailbox must show `InScope` as `True`; the negative mailbox must show `InScope` as `False`. This tests Exchange configuration, not a live token or mailbox request. Run the application's normal mailbox operation separately before Cleanup and retain that result with the change record.
+
+For an optional direct Microsoft Graph check, run script 04 once per mailbox. Do not pass positive and negative mailboxes in one invocation:
 
 ```powershell
 .\04-Test-GraphMailboxAccess.ps1 `
-    -TenantId $TenantId `
-    -AppId "00000000-0000-0000-0000-000000000000" `
-    -PositiveMailbox "allowed@contoso.com" `
-    -NegativeMailbox "not-allowed@contoso.com" `
-    -CertificateThumbprint "CERTIFICATE_THUMBPRINT"
+    -TenantId $app.TenantId `
+    -AppId $app.AppId `
+    -Mailbox $app.PositiveMailbox `
+    -ExpectedAccess Allowed `
+    -CertificatePemPath "/path/to/application.cert.pem" `
+    -PrivateKeyPath "/path/to/application.key.pem"
+
+.\04-Test-GraphMailboxAccess.ps1 `
+    -TenantId $app.TenantId `
+    -AppId $app.AppId `
+    -Mailbox $app.NegativeMailbox `
+    -ExpectedAccess Denied `
+    -CertificatePemPath "/path/to/application.cert.pem" `
+    -PrivateKeyPath "/path/to/application.key.pem"
 ```
 
-The certificate must be the certificate the application uses for authentication, and its private key must be available in `Cert:\CurrentUser\My` on the computer running the test. The positive mailbox should be in the App RBAC scope; the negative mailbox must be outside it.
-
-This is a real app-only Graph test for `Mail.Read`, not just a configuration calculation. It proves that the new authorization path can read an allowed mailbox and blocks a mailbox outside the scope. It does not prove every feature of the production application, so also run the application's normal workload test for any other endpoints or permissions it uses.
-
-During an automated Cutover, script 03 can invoke script 04 through `-LiveValidationScriptPath`. With `-AutoRollbackOnValidationFailure`, script 03 restores the removed Entra permission if the live test fails. You can also rerun script 04 independently after Cutover or during the observation period.
+Run those as two separate commands. On Windows, use `-CertificateThumbprint` instead of the two PEM path parameters when the certificate and private key are in `Cert:\CurrentUser\My`. If a mailbox expected to be denied succeeds, the Graph call worked but authorization did not enforce the expected scope. This is a failed authorization result, not a script malfunction. Stop the migration, do not run Cleanup, verify that broad Entra mailbox permission is absent, wait for propagation, obtain a new token, and retry.
 
 ## Production migration notes
 
 - Script 03 migrates an existing application; it does not require script 01 or any lab state.
 - Use script 02 to identify the App ID, current permission, legacy policy, and scope before selecting the next app.
-- `-EvaluateEffectiveAccess` in script 02 records current legacy access only. Script 04 performs the live post-Cutover `Mail.Read` test.
-- The bundled live test covers Microsoft Graph `Mail.Read`. Other permissions and protocols require a validation script that exercises the application's real operation.
+- `-EvaluateEffectiveAccess` in script 02 records current legacy access only.
+- `Test-ServicePrincipalAuthorization` validates App RBAC scope configuration; the application's normal test validates real operation.
 - Prepare stops before changes when an app has multiple policy-controlled permissions. Those apps require one coordinated migration design.
 - Finish Prepare, Cutover, observation, and Cleanup for one App ID before starting another.
 
@@ -320,25 +446,21 @@ During an automated Cutover, script 03 can invoke script 04 through `-LiveValida
 
 ### Required execution platform
 
-Run this toolkit on Windows with PowerShell 7.x. The complete workflow depends on Windows certificate-store functionality, and authentication behavior on macOS and Linux isn't supported by this toolkit.
+Exchange Online operations require ExchangeOnlineManagement 3.6.0 and interactive browser authentication. Versions 3.7.0 and later are not supported by this toolkit configuration. Script 01 generates its certificate and private key with OpenSSL instead of the Windows certificate store.
 
-Scripts 01, 02, 03, and 05 accept `-AuthenticationMode Auto`, `Browser`, or `DeviceCode`. On Windows, the default `Auto` mode uses interactive browser authentication and bypasses the Exchange Online Web Account Manager (WAM) broker. This avoids `Microsoft.Identity.Client.Platforms.Features.RuntimeBroker.RuntimeBroker` null-reference failures seen in some PowerShell and Windows host combinations. Use `DeviceCode` only when interactive browser authentication isn't available in the approved environment.
+Scripts 01, 02, 03, and 05 accept `-AuthenticationMode Auto` or `Browser`; both modes open the interactive browser sign-in. The signed-in account can complete MFA in that browser session.
 
 For example:
 
 ```powershell
 .\02-Export-AapInventory.ps1 -TenantId $TenantId
-
-# Optional device-code authentication on Windows
-.\02-Export-AapInventory.ps1 `
-    -TenantId $TenantId `
-    -AuthenticationMode DeviceCode
 ```
 
-If authentication fails in `Microsoft.Identity.Client.Platforms.Features.RuntimeBroker.RuntimeBroker`, update the toolkit and rerun the normal command. As an immediate workaround with an older copy of the toolkit, use `-AuthenticationMode DeviceCode`. Also update ExchangeOnlineManagement before troubleshooting further:
+If another module version is selected, close all PowerShell sessions, open a fresh PowerShell 7 session, and verify the installed versions:
 
 ```powershell
-Update-Module ExchangeOnlineManagement
+Get-Module ExchangeOnlineManagement -ListAvailable |
+    Select-Object Name, Version, Path
 ```
 
 ## What changes
@@ -360,7 +482,7 @@ The Entra application, Enterprise Application service principal, and certificate
 | `01-New-LegacyAapLab.ps1` | Creates the legacy test configuration |
 | `02-Export-AapInventory.ps1` | Exports inventory and tests legacy policy access for all apps or one app |
 | `03-Convert-AapToAppRbac.ps1` | Runs Prepare, Cutover, or Cleanup |
-| `04-Test-GraphMailboxAccess.ps1` | Tests live authorized and unauthorized mailbox access |
+| `04-Test-GraphMailboxAccess.ps1` | Optionally tests one live mailbox access expectation per invocation |
 | `05-New-AppRbacLab.ps1` | Creates a separate application using App RBAC directly |
 | `INVENTORY-OUTPUT-GUIDE.md` | Explains the inventory outputs |
 
@@ -374,7 +496,7 @@ The Entra application, Enterprise Application service principal, and certificate
 
 ## Rollback
 
-Use `-AutoRollbackOnValidationFailure` during Cutover. For manual rollback, restore the original Entra application permission first, obtain a new token, and repeat the positive and negative tests. Do not remove App RBAC as the first rollback action.
+For rollback, restore the original Entra application permission first, obtain a new token, and repeat the separate authorization and application tests. Do not remove App RBAC as the first rollback action.
 
 ## Production checklist
 
@@ -400,7 +522,7 @@ Use `-AutoRollbackOnValidationFailure` during Cutover. For manual rollback, rest
 
 Use this section only after reviewing the production workflow above and only in an approved nonproduction tenant. These scripts create disposable applications and are not required to discover or migrate existing applications.
 
-`01-New-LegacyAapLab.ps1` creates a legacy Application Access Policy configuration that can be discovered by script 02 and migrated with script 03. `05-New-AppRbacLab.ps1` creates a separate application directly on App RBAC. Script 04 performs the live positive and negative mailbox tests for either path.
+`01-New-LegacyAapLab.ps1` creates a legacy Application Access Policy configuration that can be discovered by script 02 and migrated with script 03. `05-New-AppRbacLab.ps1` creates a separate application directly on App RBAC. Script 04 optionally tests one mailbox and one expected access result per invocation.
 
 Set the test values:
 
@@ -455,10 +577,11 @@ $state = Get-Content ".\Output\lab\legacy-lab-state.json" -Raw |
     ConvertFrom-Json
 
 $AppId = $state.Application.AppId
-$CertificateThumbprint = $state.Certificate.Thumbprint
+$CertificatePemPath = (Resolve-Path $state.Certificate.CertificatePemPath).Path
+$PrivateKeyPath = (Resolve-Path $state.Certificate.PrivateKeyPath).Path
 ```
 
-Use these values in Step 3 of the production workflow. Set `$app.AppId = $AppId` and `$liveTest.LiveValidationParameters.CertificateThumbprint = $CertificateThumbprint`. The Prepare, Cutover, and Cleanup commands are otherwise identical.
+Use these values in Step 3 of the production workflow and set `$app.AppId = $AppId`. The Prepare, Cutover, and Cleanup commands are otherwise identical.
 
 ### 4. Create and test a new App RBAC application directly
 
@@ -481,17 +604,20 @@ $nativeParameters = @{
 .\05-New-AppRbacLab.ps1 @nativeParameters -Execute
 ```
 
-After allowing up to two hours for propagation, run the live Graph test:
+After allowing up to two hours for propagation, test each mailbox scope separately:
 
 ```powershell
 $nativeState = Get-Content `
     ".\Output\native-app-rbac-lab\native-app-rbac-lab-state.json" `
     -Raw | ConvertFrom-Json
 
-.\04-Test-GraphMailboxAccess.ps1 `
-    -TenantId $TenantId `
-    -AppId $nativeState.Application.AppId `
-    -PositiveMailbox $nativeState.AuthorizedMailboxes[0] `
-    -NegativeMailbox $nativeState.DeniedMailbox `
-    -CertificateThumbprint $nativeState.Certificate.Thumbprint
+Test-ServicePrincipalAuthorization `
+    -Identity $nativeState.Application.AppId `
+    -Resource $nativeState.AuthorizedMailboxes[0] |
+    Where-Object RoleName -eq 'Application Mail.Read'
+
+Test-ServicePrincipalAuthorization `
+    -Identity $nativeState.Application.AppId `
+    -Resource $nativeState.DeniedMailbox |
+    Where-Object RoleName -eq 'Application Mail.Read'
 ```
