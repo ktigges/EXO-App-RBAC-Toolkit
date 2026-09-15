@@ -400,6 +400,14 @@ Test-ServicePrincipalAuthorization `
 
 The positive mailbox must show `InScope` as `True`; the negative mailbox must show `InScope` as `False`. This tests Exchange configuration, not a live token or mailbox request. Run the application's normal mailbox operation separately before Cleanup and retain that result with the change record.
 
+### Why the Exchange test can pass while a Graph request succeeds
+
+`Test-ServicePrincipalAuthorization` is a control-plane configuration evaluator. It calculates whether the Exchange service principal, role assignment, and resource scope place a mailbox in scope. It can correctly report `InScope=False` before that restriction is active in Microsoft Graph's live authorization path.
+
+Script 04 is a data-plane test. It obtains an app-only token and sends a real mailbox request to Microsoft Graph. Its result also depends on propagation, removal of the broad Entra mailbox permission, and obtaining a new token after the permission change. If Cutover failed and automatic rollback restored broad Entra `Mail.Read`, the Graph request may succeed even while `Test-ServicePrincipalAuthorization` reports `InScope=False`.
+
+Use `Test-ServicePrincipalAuthorization` to prove the App RBAC configuration is correct. Use script 04 after a completed Cutover to prove live Graph enforcement is correct. Both must pass before Cleanup.
+
 For an optional direct Microsoft Graph check, run script 04 once per mailbox. Do not pass positive and negative mailboxes in one invocation:
 
 ```powershell

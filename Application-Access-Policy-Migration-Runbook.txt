@@ -201,6 +201,23 @@ These commands test the Exchange App RBAC configuration separately for each
 mailbox. They do not call Microsoft Graph. Perform any application-level mailbox
 test separately through the application's normal test procedure.
 
+WHY THE EXCHANGE TEST CAN PASS WHILE THE GRAPH TEST FAILS:
+
+- Test-ServicePrincipalAuthorization evaluates the configured Exchange App RBAC
+    role assignment and scope. It can correctly show Vader as InScope True and
+    Kevin as InScope False as soon as Exchange can calculate the configuration.
+- Script 04 sends a real Microsoft Graph mailbox request using an app-only token.
+    Its result depends on data-plane propagation, removal of the broad Entra
+    Mail.Read permission, and issuance of a new token after those changes.
+- Therefore, InScope False means the App RBAC scope is configured correctly; it
+    does not prove that Microsoft Graph is enforcing that scope yet.
+- If a failed Cutover restored broad Entra Mail.Read, Kevin can succeed in script
+    04 even though Test-ServicePrincipalAuthorization reports InScope False.
+
+Use Test-ServicePrincipalAuthorization to validate the configuration. Use script
+04 after a completed Cutover and with a new token to validate live enforcement.
+Both tests must produce the expected result before Cleanup.
+
 Do not continue to Cutover unless all post-Prepare results are correct.
 
 STEP 7 - CUT OVER
@@ -266,6 +283,12 @@ the Graph call worked but live authorization did not enforce the expected scope.
 This is a failed authorization result, not a script malfunction. Stop, do not run
 Cleanup, verify that broad Entra Mail.Read is absent, wait for propagation, obtain
 a new token, and retry the denied-mailbox command.
+
+It is possible for Test-ServicePrincipalAuthorization to continue showing Kevin
+as InScope False while this Graph request succeeds. The first result validates the
+configured scope; the second validates whether that scope is active in the live
+Graph authorization path. Do not treat the configuration test as a substitute for
+the post-Cutover Graph test.
 
 Do not clean up the legacy policy unless both results are correct and the observation period is complete.
 
