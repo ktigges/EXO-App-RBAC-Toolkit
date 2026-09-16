@@ -613,6 +613,8 @@ Set-Location "C:\Path\Application Access Policy Migration"
 
 The denied mailbox must remain outside the authorized group. It confirms that the application cannot access mailboxes beyond its approved scope.
 
+Script 01 reuses existing recipients by default and stops if an authorized or denied address is missing. `CreateSharedMailboxes = $true` creates only missing addresses as shared mailboxes; it does not recreate existing mailboxes. Authorized mailboxes are added directly to the scope group. The denied mailbox is not added, but the script does not remove pre-existing membership from a reused group.
+
 ### 1. Create a legacy test application
 
 ```powershell

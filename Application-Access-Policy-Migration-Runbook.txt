@@ -37,6 +37,7 @@ $lab = @{
     AppDisplayName              = 'AAP Migration Lab'
     ScopeGroupName              = 'AAP-Lab-Mailboxes'
     GraphPermissionValue        = 'Mail.Read'
+    # CreateSharedMailboxes     = $true
     AuthenticationMode         = 'Browser'
 }
 
@@ -52,6 +53,14 @@ This creates:
 - A mail-enabled security group containing only the allowed mailbox.
 - A legacy RestrictAccess AAP.
 - Output/lab/legacy-lab-state.json.
+
+Mailbox behavior:
+- By default, authorized and denied addresses must already exist.
+- CreateSharedMailboxes = $true creates only missing addresses as shared mailboxes.
+- Existing mailboxes are reused and never recreated.
+- Authorized mailboxes are added directly to the scope group.
+- The denied mailbox is not added. If a reused group already contains it, remove
+    that membership before testing.
 
 The Enterprise Application is already the Entra service principal. Prepare later
 creates an Exchange pointer to it; it does not create another Entra object.

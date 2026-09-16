@@ -39,11 +39,11 @@ App RBAC requires Exchange Online to create its own pointer to that existing Ent
 - **Entra service-principal object ID:** the Enterprise Application object ID.
 - **Exchange service-principal pointer:** an Exchange object created with both IDs. It is not another Entra application or Enterprise Application.
 
-[![Legacy Application Access Policy wiring](docs/diagrams/legacy-aap.svg)](docs/diagrams/viewer.html?diagram=legacy-aap)
+[![Legacy Application Access Policy wiring](docs/diagrams/legacy-aap.svg)](docs/diagrams/legacy-aap.png?raw=1)
 
-[![Exchange Online App RBAC wiring](docs/diagrams/app-rbac.svg)](docs/diagrams/viewer.html?diagram=app-rbac)
+[![Exchange Online App RBAC wiring](docs/diagrams/app-rbac.svg)](docs/diagrams/app-rbac.png?raw=1)
 
-Select a diagram to open the interactive viewer. Use the controls or mouse wheel to zoom and drag to pan.
+On GitHub, select a diagram to open its high-resolution PNG. Click the opened image for actual size, use browser zoom, or pinch to zoom on a touch device.
 
 ## Automation Boundary
 
@@ -58,11 +58,15 @@ Select a diagram to open the interactive viewer. Use the controls or mouse wheel
 
 Script 03 accepts only `-Phase Prepare`. Script 06 is optional and accepts one App ID plus one phase; it has no inventory loop or bulk mode. The manual commands remain available for administrators who do not want scripted Cutover or Cleanup.
 
-[![Prepare is automated; Cutover and Cleanup are manual](docs/diagrams/migration-phases.svg)](docs/diagrams/viewer.html?diagram=migration-phases)
+[![Prepare plus optional one-app Cutover and Cleanup](docs/diagrams/migration-phases.svg)](docs/diagrams/migration-phases.png?raw=1)
 
 ## 1. Test the Process with the Lab App
 
 Choose an allowed mailbox and a denied mailbox. The denied mailbox must not belong to the scope group.
+
+By default, script 01 uses existing recipients. It looks up every authorized and denied address with `Get-Recipient` and stops if any address does not exist. Add `CreateSharedMailboxes = $true` to the parameter block only when you want the script to create missing addresses as shared mailboxes.
+
+Existing mailboxes are never recreated. Authorized mailboxes are added as direct members of the new or reused scope group. The denied mailbox is not added, but the script does not remove it if it was already a member of a reused group; verify that membership before testing.
 
 ```powershell
 $TenantId = '00000000-0000-0000-0000-000000000000'
@@ -78,6 +82,7 @@ $lab = @{
     AppDisplayName              = 'AAP Migration Lab'
     ScopeGroupName              = 'AAP-Lab-Mailboxes'
     GraphPermissionValue        = 'Mail.Read'
+    # CreateSharedMailboxes     = $true
     AuthenticationMode         = 'Browser'
 }
 
