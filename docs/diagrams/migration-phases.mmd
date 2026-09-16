@@ -1,9 +1,9 @@
 flowchart LR
     Inventory[Inventory] --> Prepare[Prepare<br/>Add App RBAC]
-    Prepare --> Automated[Only automated<br/>tenant changes]
+    Prepare --> Automated[Prepare approved apps<br/>with script 03]
     Automated --> Wait[Wait for propagation]
     Wait --> Config[Validate both<br/>configuration paths]
-    Config --> Cutover[Manual Cutover<br/>One app: remove broad grant]
+    Config --> Cutover[One-app Cutover<br/>Script 06 or direct command]
     Cutover --> Live[Fresh-token<br/>live Graph tests]
     Live --> Observe[Observation period]
-    Observe --> Cleanup[Manual Cleanup<br/>One app: remove legacy AAP]
+    Observe --> Cleanup[One-app Cleanup<br/>Script 06 or direct command]

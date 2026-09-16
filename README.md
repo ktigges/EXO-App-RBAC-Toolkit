@@ -1,6 +1,17 @@
 # Application Access Policy to App RBAC Toolkit
 
-This toolkit inventories legacy Exchange Online Application Access Policies (AAPs) and automates only App RBAC preparation. It never removes a broad Entra permission or a legacy AAP. Perform those changes manually, one application at a time.
+This toolkit inventories legacy Exchange Online Application Access Policies (AAPs), prepares App RBAC, and provides an optional script for completing one reviewed application migration at a time.
+
+## Why This Migration
+
+- Microsoft identifies Application Access Policies as a legacy mailbox-scoping model and recommends Exchange Online RBAC for Applications for new configurations.
+- App RBAC replaces the broad-permission-plus-AAP model with an Exchange application role and resource scope.
+- Microsoft has not published a firm AAP retirement date in the cited guidance. Plan and validate the migration rather than assuming an enforcement date.
+
+Microsoft documentation:
+
+- [Role Based Access Control for Applications in Exchange Online](https://learn.microsoft.com/exchange/permissions-exo/application-rbac)
+- [Application Access Policies in Exchange Online](https://learn.microsoft.com/exchange/permissions-exo/application-access-policies)
 
 For field definitions and extended background, see [INVENTORY-OUTPUT-GUIDE.md](INVENTORY-OUTPUT-GUIDE.md) and [DETAILED-MIGRATION-GUIDE.md](DETAILED-MIGRATION-GUIDE.md). For a command-by-command lab, see [Application-Access-Policy-Migration-Runbook.txt](Application-Access-Policy-Migration-Runbook.txt).
 
@@ -18,7 +29,7 @@ Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 Install-Module Microsoft.Graph.Applications -Scope CurrentUser
 ```
 
-## Know the Two Service Principals
+## The Two Service Principals
 
 Creating an app registration also creates an Entra Enterprise Application. That Enterprise Application is the tenant's Entra service principal.
 
@@ -28,9 +39,11 @@ App RBAC requires Exchange Online to create its own pointer to that existing Ent
 - **Entra service-principal object ID:** the Enterprise Application object ID.
 - **Exchange service-principal pointer:** an Exchange object created with both IDs. It is not another Entra application or Enterprise Application.
 
-[![Legacy Application Access Policy wiring](docs/diagrams/legacy-aap.svg)](docs/diagrams/legacy-aap.svg)
+[![Legacy Application Access Policy wiring](docs/diagrams/legacy-aap.svg)](docs/diagrams/viewer.html?diagram=legacy-aap)
 
-[![Exchange Online App RBAC wiring](docs/diagrams/app-rbac.svg)](docs/diagrams/app-rbac.svg)
+[![Exchange Online App RBAC wiring](docs/diagrams/app-rbac.svg)](docs/diagrams/viewer.html?diagram=app-rbac)
+
+Select a diagram to open the interactive viewer. Use the controls or mouse wheel to zoom and drag to pan.
 
 ## Automation Boundary
 
@@ -41,10 +54,11 @@ App RBAC requires Exchange Online to create its own pointer to that existing Ent
 | `03-Convert-AapToAppRbac.ps1` | Prepare only: creates/reuses the Exchange pointer and scope, then creates the App RBAC role assignment. |
 | `04-Test-GraphMailboxAccess.ps1` | Read-only live `Mail.Read` authorization test for one mailbox. |
 | `05-New-AppRbacLab.ps1` | Creates a separate Windows-only native App RBAC lab. |
+| `06-Complete-AppRbacMigration.ps1` | Optional single-app Cutover or Cleanup with preview, explicit acknowledgement, validation, and optional rollback. |
 
-Script 03 accepts only `-Phase Prepare`. It leaves the broad Entra grant and legacy AAP unchanged. The toolkit contains no automated Cutover or Cleanup path.
+Script 03 accepts only `-Phase Prepare`. Script 06 is optional and accepts one App ID plus one phase; it has no inventory loop or bulk mode. The manual commands remain available for administrators who do not want scripted Cutover or Cleanup.
 
-[![Prepare is automated; Cutover and Cleanup are manual](docs/diagrams/migration-phases.svg)](docs/diagrams/migration-phases.svg)
+[![Prepare is automated; Cutover and Cleanup are manual](docs/diagrams/migration-phases.svg)](docs/diagrams/viewer.html?diagram=migration-phases)
 
 ## 1. Test the Process with the Lab App
 
@@ -172,9 +186,58 @@ Test-ServicePrincipalAuthorization `
 
 Required results are `InScope=True` for the positive mailbox and `InScope=False` for the negative mailbox.
 
-## 4. Migrate One Application Manually
+## 4. Migrate One Application
 
 Finish all steps for one App ID before selecting the next application.
+
+### Optional single-app script
+
+Script 06 reads the state created by Prepare, verifies the exact Entra and Exchange objects, and previews by default.
+
+Preview and execute Cutover for one app:
+
+```powershell
+./06-Complete-AppRbacMigration.ps1 `
+    -TenantId $TenantId `
+    -AppId $app.AppId `
+    -Phase Cutover
+
+./06-Complete-AppRbacMigration.ps1 `
+    -TenantId $TenantId `
+    -AppId $app.AppId `
+    -Phase Cutover `
+    -AcknowledgeSingleAppChange `
+    -AcknowledgeExternalLiveValidation `
+    -AutoRollbackOnValidationFailure `
+    -Execute
+```
+
+`-AcknowledgeExternalLiveValidation` means you will run the application's live test separately. To have the script run allowed and denied `Mail.Read` tests instead, replace that switch with `-CertificatePemPath` and `-PrivateKeyPath`, or use `-CertificateThumbprint` on Windows.
+
+After successful live testing and the observation period, preview and execute Cleanup:
+
+```powershell
+./06-Complete-AppRbacMigration.ps1 `
+    -TenantId $TenantId `
+    -AppId $app.AppId `
+    -Phase Cleanup
+
+./06-Complete-AppRbacMigration.ps1 `
+    -TenantId $TenantId `
+    -AppId $app.AppId `
+    -Phase Cleanup `
+    -AcknowledgeSingleAppChange `
+    -AcknowledgeExternalLiveValidation `
+    -ObservationValidated `
+    -AutoRollbackOnValidationFailure `
+    -Execute
+```
+
+Cutover removes only the matching broad Entra permission recorded by Prepare. Cleanup removes only the matching legacy AAP. Both retain the App RBAC assignment and write results to the same migration state file.
+
+### Manual option
+
+Use the following commands instead of script 06 when the change must be performed directly.
 
 ### Manually remove the matching broad Entra grant
 

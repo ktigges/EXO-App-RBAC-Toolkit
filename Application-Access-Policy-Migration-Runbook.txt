@@ -3,11 +3,11 @@ APPLICATION ACCESS POLICY TO APP RBAC RUNBOOK
 
 OPERATING RULE
 --------------
-- Scripts automate inventory, test-lab creation, and App RBAC Prepare only.
+- Scripts automate inventory, test-lab creation, and App RBAC Prepare.
 - Prepare may create the Exchange service-principal pointer, Management Scope,
   and application-role assignment.
-- An administrator manually removes one broad Entra grant at a time.
-- An administrator manually removes one legacy AAP at a time after validation.
+- Script 06 optionally removes one reviewed broad Entra grant or one reviewed
+    legacy AAP. The equivalent direct commands remain available.
 - Never put Cutover or Cleanup commands in a loop.
 
 REQUIREMENTS
@@ -163,9 +163,33 @@ Required results:
 - Positive mailbox: InScope True
 - Negative mailbox: InScope False
 
-STEP 4 - MANUALLY CUT OVER ONE APPLICATION
-------------------------------------------
+STEP 4 - CUT OVER ONE APPLICATION
+---------------------------------
 Do not start another application's manual migration until this one is complete.
+
+OPTION A - SINGLE-APP SCRIPT
+
+# Preview.
+./06-Complete-AppRbacMigration.ps1 `
+    -TenantId $TenantId `
+    -AppId $app.AppId `
+    -Phase Cutover
+
+# Execute after approval.
+./06-Complete-AppRbacMigration.ps1 `
+    -TenantId $TenantId `
+    -AppId $app.AppId `
+    -Phase Cutover `
+    -AcknowledgeSingleAppChange `
+    -AcknowledgeExternalLiveValidation `
+    -AutoRollbackOnValidationFailure `
+    -Execute
+
+Use AcknowledgeExternalLiveValidation when the application owner will run the
+live test separately. To have the script run Mail.Read tests, replace that switch
+with CertificatePemPath and PrivateKeyPath, or CertificateThumbprint on Windows.
+
+OPTION B - DIRECT COMMANDS
 
 Use the selected AssignmentId from application-permissions.csv:
 
@@ -200,9 +224,31 @@ an authorization denial. Test the application's normal business operation too.
 If the denied mailbox succeeds, STOP. Check for another broad permission grant,
 a stale token, and propagation delay. Do not remove the legacy AAP.
 
-STEP 5 - MANUALLY REMOVE THIS APPLICATION'S LEGACY AAP
-------------------------------------------------------
+STEP 5 - REMOVE THIS APPLICATION'S LEGACY AAP
+---------------------------------------------
 Continue only after the observation period and application-owner approval.
+
+OPTION A - SINGLE-APP SCRIPT
+
+# Preview.
+./06-Complete-AppRbacMigration.ps1 `
+    -TenantId $TenantId `
+    -AppId $app.AppId `
+    -Phase Cleanup
+
+# Execute after approval and observation.
+./06-Complete-AppRbacMigration.ps1 `
+    -TenantId $TenantId `
+    -AppId $app.AppId `
+    -Phase Cleanup `
+    -AcknowledgeSingleAppChange `
+    -AcknowledgeExternalLiveValidation `
+    -ObservationValidated `
+    -AutoRollbackOnValidationFailure `
+    -Execute
+
+OPTION B - DIRECT COMMANDS
+
 Use PolicyIdentity from application-access-policies.csv:
 
 $PolicyIdentity = 'POLICY-IDENTITY-FROM-APPLICATION-ACCESS-POLICIES-CSV'

@@ -94,7 +94,7 @@ Application permissions such as Microsoft Graph `Mail.Read` are organization-wid
 
 This toolkit can inventory legacy Application Access Policies, assess migration readiness, prepare an existing application for Exchange Online RBAC for Applications, or create optional applications for testing. These are separate workflows. You do not need to create a test application to inventory an existing tenant.
 
-The automation boundary is deliberate: script 03 accepts only `-Phase Prepare`. It can create the Exchange service-principal pointer, Management Scope, and application-role assignment. It cannot remove an Entra grant or legacy AAP. Cutover and Cleanup are administrator-run, one-application-at-a-time changes.
+The automation boundary is deliberate: script 03 accepts only `-Phase Prepare`. Script 06 optionally performs Cutover or Cleanup for one prepared App ID with preview, explicit acknowledgement, validation, state tracking, and optional rollback. It has no inventory loop or bulk mode. Administrators can use the equivalent direct commands instead.
 
 The Enterprise Application shown in Entra is already the tenant's Entra service principal. Exchange `New-ServicePrincipal` creates an Exchange pointer to it using the same application/client ID and the Enterprise Application's object ID. It does not create another app registration or Enterprise Application.
 
@@ -350,9 +350,33 @@ The positive mailbox must show `InScope` as `True`; the negative mailbox must sh
 
 Do not continue unless the legacy policy and App RBAC scope checks return the expected results.
 
-### Step 4: Manually cut over and validate one application
+### Step 4: Cut over and validate one application
 
-Use the selected row's `AssignmentId` from `application-permissions.csv`. Retrieve the exact assignment before removing it:
+The optional script reads the state created by Prepare and previews the exact grant it will remove:
+
+```powershell
+.\06-Complete-AppRbacMigration.ps1 `
+    -TenantId $app.TenantId `
+    -AppId $app.AppId `
+    -Phase Cutover
+```
+
+After approval, execute for this one application:
+
+```powershell
+.\06-Complete-AppRbacMigration.ps1 `
+    -TenantId $app.TenantId `
+    -AppId $app.AppId `
+    -Phase Cutover `
+    -AcknowledgeSingleAppChange `
+    -AcknowledgeExternalLiveValidation `
+    -AutoRollbackOnValidationFailure `
+    -Execute
+```
+
+Use `-AcknowledgeExternalLiveValidation` when the application owner will perform the live test separately. To have script 06 run allowed and denied `Mail.Read` tests, replace that switch with `-CertificatePemPath` and `-PrivateKeyPath`, or use `-CertificateThumbprint` on Windows.
+
+The equivalent direct-command option follows. Use the selected row's `AssignmentId` from `application-permissions.csv`. Retrieve the exact assignment before removing it:
 
 ```powershell
 Connect-MgGraph -TenantId $app.TenantId `
@@ -379,9 +403,28 @@ Remove-MgServicePrincipalAppRoleAssignment `
 
 Disconnect Graph, wait for propagation, obtain a fresh app-only token, and perform both the allowed and denied live tests. Also run the application's normal business test. Do not continue when the denied mailbox succeeds.
 
-### Step 5: Observe and manually clean up
+### Step 5: Observe and clean up
 
-After the observation period and application-owner approval, use the selected `PolicyIdentity` from `application-access-policies.csv` and inspect the exact policy:
+After the observation period and application-owner approval, preview and execute optional scripted Cleanup:
+
+```powershell
+.\06-Complete-AppRbacMigration.ps1 `
+    -TenantId $app.TenantId `
+    -AppId $app.AppId `
+    -Phase Cleanup
+
+.\06-Complete-AppRbacMigration.ps1 `
+    -TenantId $app.TenantId `
+    -AppId $app.AppId `
+    -Phase Cleanup `
+    -AcknowledgeSingleAppChange `
+    -AcknowledgeExternalLiveValidation `
+    -ObservationValidated `
+    -AutoRollbackOnValidationFailure `
+    -Execute
+```
+
+The equivalent direct-command option follows. Use the selected `PolicyIdentity` from `application-access-policies.csv` and inspect the exact policy:
 
 ```powershell
 $PolicyIdentity = "POLICY-IDENTITY-FROM-APPLICATION-ACCESS-POLICIES-CSV"
@@ -453,7 +496,7 @@ Run those as two separate commands. On Windows, use `-CertificateThumbprint` ins
 
 ## Production migration notes
 
-- Script 03 migrates an existing application; it does not require script 01 or any lab state.
+- Scripts 03 and 06 migrate an existing application; they do not require script 01 or any lab state.
 - Use script 02 to identify the App ID, current permission, legacy policy, and scope before selecting the next app.
 - `-EvaluateEffectiveAccess` in script 02 records current legacy access only.
 - `Test-ServicePrincipalAuthorization` validates App RBAC scope configuration; the application's normal test validates real operation.
@@ -463,7 +506,7 @@ Run those as two separate commands. On Windows, use `-CertificateThumbprint` ins
 ## Safety requirements
 
 - Use lab-creation scripts 01 and 05 only in an approved nonproduction or test tenant.
-- Use script 03 in production only for approved Prepare changes. Perform Cutover and Cleanup manually through an approved change, validation, observation, and rollback plan.
+- Use script 03 in production only for approved Prepare changes. Use script 06 or the direct commands for one-app Cutover and Cleanup through an approved change, validation, observation, and rollback plan.
 - Preview every change before adding `-Execute`.
 - Verify that Microsoft Graph and Exchange Online connect to the same tenant.
 - Use the Enterprise Application service-principal object ID for Exchange `New-ServicePrincipal -ObjectId`.
@@ -513,6 +556,7 @@ The Entra application, Enterprise Application service principal, and certificate
 | `03-Convert-AapToAppRbac.ps1` | Prepares the Exchange pointer, scope, and App RBAC assignment only |
 | `04-Test-GraphMailboxAccess.ps1` | Optionally tests one live mailbox access expectation per invocation |
 | `05-New-AppRbacLab.ps1` | Creates a separate application using App RBAC directly |
+| `06-Complete-AppRbacMigration.ps1` | Optionally runs Cutover or Cleanup for one prepared application |
 | `INVENTORY-OUTPUT-GUIDE.md` | Explains the inventory outputs |
 
 ## Migration exceptions
