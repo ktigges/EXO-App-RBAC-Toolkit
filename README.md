@@ -226,6 +226,8 @@ $app = @{
 ./03-Convert-AapToAppRbac.ps1 @app -Phase Prepare -Execute
 ```
 
+If a previous version failed with `AADSTS650053` for `AppRoleAssignment.Read.All`, update the toolkit, run `Disconnect-MgGraph`, and retry. That delegated scope does not exist and is no longer requested.
+
 Prepare creates only the missing objects required for the approved mapping:
 
 1. Exchange service-principal pointer to the existing Entra service principal.

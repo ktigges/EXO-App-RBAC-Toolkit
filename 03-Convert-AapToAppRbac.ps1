@@ -54,7 +54,6 @@ if (-not $StatePath) {
 
 Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
     'Application.Read.All',
-    'AppRoleAssignment.Read.All',
     'Directory.Read.All'
 ) -AuthenticationMode $AuthenticationMode
 $resolvedTenantId = [string](Get-MgContext).TenantId
