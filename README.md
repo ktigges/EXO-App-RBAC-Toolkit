@@ -208,6 +208,8 @@ Join the files by `AppId`. Do not prepare wildcard policies, `DenyAccess` polici
 
 For each reviewed application, create a parameter block with its own App ID, role, scope, and test mailboxes. Run preview and Execute once for that application, then move to the next approved application.
 
+**Script 03 creates no mailboxes.** `PositiveMailbox` and `NegativeMailbox` must already exist and are used only to validate scope behavior. The positive mailbox must already be inside the selected App RBAC scope, and the negative mailbox must already be outside it. Script 03 does not change group membership.
+
 ```powershell
 $app = @{
     TenantId             = $TenantId

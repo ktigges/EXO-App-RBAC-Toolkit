@@ -143,6 +143,10 @@ STEP 3 - PREPARE EVERY APPROVED APPLICATION
 -------------------------------------------
 Create one reviewed parameter block per application. Example:
 
+SCRIPT 03 CREATES NO MAILBOXES. PositiveMailbox and NegativeMailbox must already
+exist. Script 03 uses them only to validate in-scope and out-of-scope behavior;
+it does not change scope-group membership.
+
 $app = @{
     TenantId             = $TenantId
     AppId                = 'APPLICATION-CLIENT-ID'

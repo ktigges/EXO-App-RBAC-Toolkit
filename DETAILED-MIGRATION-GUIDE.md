@@ -286,6 +286,8 @@ Assume the customer has this existing configuration:
 
 `03-Convert-AapToAppRbac.ps1` **creates the migration configuration automatically when Prepare is run with `-Execute`**. It does not create another Entra application or Enterprise Application. It reuses the existing Entra service principal, creates its Exchange service-principal pointer, creates a Management Scope from the legacy policy group, and assigns `Application Mail.Read` over that scope.
 
+**Script 03 creates no mailboxes.** `PositiveMailbox` and `NegativeMailbox` must already exist and are used only to validate the resulting scope. Script 03 does not alter scope-group membership.
+
 It does not automatically select an app from the inventory. Review the exported rows joined by `AppId`, then run Prepare separately for every approved application. This creates all approved Exchange pointers and assignments without changing a production application's current authorization path. After preparation and propagation, manually migrate applications one at a time.
 
 Set the values once:
