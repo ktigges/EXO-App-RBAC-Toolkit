@@ -47,6 +47,12 @@ $ErrorActionPreference = 'Stop'
 
 Import-Module (Join-Path $PSScriptRoot 'AppRbacMigration.Common.psm1') -Force
 
+$parsedAppId = [guid]::Empty
+if ($AppId -eq 'APPLICATION-CLIENT-ID' -or -not [guid]::TryParse($AppId, [ref]$parsedAppId)) {
+    throw "AppId '$AppId' is not a valid application/client ID. If you are using the `$app parameter block, set `$app.AppId to the real App ID before running script 03."
+}
+$AppId = $parsedAppId.ToString()
+
 if (-not $StatePath) {
     $safeAppId = $AppId -replace '[^a-zA-Z0-9-]', '_'
     $StatePath = Join-Path (Join-Path (Join-Path $PSScriptRoot 'Output') 'migrations') "$safeAppId.json"
@@ -240,12 +246,35 @@ if ($Phase -eq 'Prepare') {
     $targetRecipientFilter = Get-TargetRecipientFilter
     $existingScope = $null
     if ($ScopeType -eq 'ExistingPolicyGroup' -or $ScopeType -eq 'RecipientFilter') {
-        $existingScope = Get-ManagementScope -Identity $ManagementScopeName -ErrorAction SilentlyContinue
+        $targetFilter = ConvertTo-NormalizedFilter -Filter $targetRecipientFilter
+        $managementScopes = @(Get-ManagementScope -ErrorAction Stop)
+        $namedScopes = @($managementScopes |
+                Where-Object { [string]$_.Name -eq $ManagementScopeName })
+        if ($namedScopes.Count -gt 1) {
+            throw "Multiple Management Scopes were returned with the name '$ManagementScopeName'."
+        }
+        $existingScope = $namedScopes | Select-Object -First 1
         if ($existingScope) {
             $existingFilter = ConvertTo-NormalizedFilter -Filter ([string]$existingScope.RecipientFilter)
-            $targetFilter = ConvertTo-NormalizedFilter -Filter $targetRecipientFilter
             if ($existingFilter -ne $targetFilter -and -not $ReuseExistingScope) {
                 throw "Management Scope '$ManagementScopeName' already exists with a different recipient filter. Use a unique scope name or explicitly supply -ReuseExistingScope after verifying its membership."
+            }
+        }
+        else {
+            $equivalentScopes = @($managementScopes |
+                    Where-Object {
+                        -not [bool]$_.Exclusive -and
+                        (ConvertTo-NormalizedFilter -Filter ([string]$_.RecipientFilter)) -eq $targetFilter -and
+                        [string]::IsNullOrWhiteSpace([string]$_.RecipientRoot)
+                    })
+            if ($equivalentScopes.Count -gt 1) {
+                $equivalentScopeNames = $equivalentScopes.Name -join ', '
+                throw "Multiple Management Scopes have the target recipient filter: $equivalentScopeNames. Supply -ManagementScopeName with the scope to reuse."
+            }
+            if ($equivalentScopes.Count -eq 1) {
+                $existingScope = $equivalentScopes[0]
+                $ManagementScopeName = [string]$existingScope.Name
+                Write-Host "Reusing equivalent Management Scope '$ManagementScopeName'." -ForegroundColor Yellow
             }
         }
     }
@@ -276,7 +305,11 @@ if ($Phase -eq 'Prepare') {
         Write-Host "Creating Management Scope '$ManagementScopeName'..." -ForegroundColor Cyan
         $existingScope = New-ManagementScope `
             -Name $ManagementScopeName `
-            -RecipientRestrictionFilter $targetRecipientFilter
+            -RecipientRestrictionFilter $targetRecipientFilter `
+            -ErrorAction Stop
+        if (-not $existingScope) {
+            throw "Management Scope '$ManagementScopeName' was not created. The App RBAC assignment was not attempted."
+        }
         $createdScope = $true
     }
 

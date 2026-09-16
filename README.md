@@ -213,12 +213,12 @@ For each reviewed application, create a parameter block with its own App ID, rol
 ```powershell
 $app = @{
     TenantId             = $TenantId
-    AppId                = 'APPLICATION-CLIENT-ID'
+    AppId                = $AppId
     ApplicationRoleName  = 'Application Mail.Read'
     EntraPermissionValue = 'Mail.Read'
     ScopeType            = 'ExistingPolicyGroup'
-    PositiveMailbox      = 'allowed@contoso.com'
-    NegativeMailbox      = 'denied@contoso.com'
+    PositiveMailbox      = $AllowedMailbox
+    NegativeMailbox      = $DeniedMailbox
     AuthenticationMode   = 'Browser'
 }
 

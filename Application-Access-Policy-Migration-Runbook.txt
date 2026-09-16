@@ -149,7 +149,7 @@ it does not change scope-group membership.
 
 $app = @{
     TenantId             = $TenantId
-    AppId                = 'APPLICATION-CLIENT-ID'
+    AppId                = $AppId
     ApplicationRoleName  = 'Application Mail.Read'
     EntraPermissionValue = 'Mail.Read'
     ScopeType            = 'ExistingPolicyGroup'
