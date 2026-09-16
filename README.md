@@ -41,7 +41,17 @@ App RBAC requires Exchange Online to create its own pointer to that existing Ent
 
 [![Legacy Application Access Policy wiring](docs/diagrams/legacy-aap.svg)](docs/diagrams/legacy-aap.png?raw=1)
 
+1. The app registration identifies the application; its Enterprise Application is the Entra service principal used at runtime.
+2. Microsoft Graph grants that service principal a broad application permission such as `Mail.Read`.
+3. Exchange links the App ID to a legacy `RestrictAccess` Application Access Policy.
+4. The policy allows access only to direct mailbox members of its mail-enabled security group.
+
 [![Exchange Online App RBAC wiring](docs/diagrams/app-rbac.svg)](docs/diagrams/app-rbac.png?raw=1)
+
+1. The existing Entra app registration and Enterprise Application remain in place.
+2. Exchange creates a service-principal pointer using the application ID and Entra service-principal object ID.
+3. An Exchange application role such as `Application Mail.Read` is assigned to that pointer.
+4. A Management Scope limits the role assignment to the intended mailbox recipients.
 
 On GitHub, select a diagram to open its high-resolution PNG. Click the opened image for actual size, use browser zoom, or pinch to zoom on a touch device.
 
@@ -59,6 +69,11 @@ On GitHub, select a diagram to open its high-resolution PNG. Click the opened im
 Script 03 accepts only `-Phase Prepare`. Script 06 is optional and accepts one App ID plus one phase; it has no inventory loop or bulk mode. The manual commands remain available for administrators who do not want scripted Cutover or Cleanup.
 
 [![Prepare plus optional one-app Cutover and Cleanup](docs/diagrams/migration-phases.svg)](docs/diagrams/migration-phases.png?raw=1)
+
+1. **Inventory:** discover each legacy policy, application permission, scope group, and mailbox population.
+2. **Prepare:** create or reuse the Exchange pointer and Management Scope, then add the App RBAC assignment.
+3. **Cutover:** after validation, remove the migrated broad Entra application permission for one reviewed app.
+4. **Cleanup:** after the observation period, remove that app's legacy Application Access Policy.
 
 ## 1. Test the Process with the Lab App
 
