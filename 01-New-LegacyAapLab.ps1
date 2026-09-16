@@ -21,6 +21,8 @@ param(
     [string]$AppDisplayName = 'App RBAC Migration Lab - Legacy AAP',
     [string]$ScopeGroupName = 'App-RBAC-Lab-Mailboxes',
     [string]$ScopeGroupPrimarySmtpAddress,
+    [ValidateSet('Mail.Read', 'Mail.Send')]
+    [string]$GraphPermissionValue = 'Mail.Read',
     [int]$CertificateValidDays = 30,
     [switch]$CreateSharedMailboxes,
     [switch]$Execute,
@@ -42,7 +44,7 @@ $plannedChanges = @(
     "Create a single-tenant Entra application named '$AppDisplayName'.",
     'Create its Entra service principal.',
     "Create a $CertificateValidDays-day self-signed certificate and private key with OpenSSL and upload the public key.",
-    'Grant and admin-consent Microsoft Graph Mail.Read application permission.',
+    "Grant and admin-consent Microsoft Graph $GraphPermissionValue application permission.",
     "Create or reuse the mail-enabled security group '$ScopeGroupPrimarySmtpAddress'.",
     'Add the authorized mailboxes as direct group members.',
     'Create a legacy Exchange Online Application Access Policy with RestrictAccess.',
@@ -149,7 +151,7 @@ $keyCredential = @{
 
 Update-MgApplication -ApplicationId $application.Id -KeyCredentials @($keyCredential)
 
-Write-Host 'Granting Microsoft Graph Mail.Read application permission...' -ForegroundColor Cyan
+Write-Host "Granting Microsoft Graph $GraphPermissionValue application permission..." -ForegroundColor Cyan
 $graphServicePrincipal = Get-MgServicePrincipal `
     -Filter "appId eq '00000003-0000-0000-c000-000000000000'" `
     -Property @('id', 'appId', 'displayName', 'appRoles') `
@@ -162,13 +164,13 @@ if (-not $graphServicePrincipal) {
 
 $mailReadRole = $graphServicePrincipal.AppRoles |
     Where-Object {
-        $_.Value -eq 'Mail.Read' -and
+        $_.Value -eq $GraphPermissionValue -and
         $_.AllowedMemberTypes -contains 'Application'
     } |
     Select-Object -First 1
 
 if (-not $mailReadRole) {
-    throw 'The Microsoft Graph Mail.Read application role was not found.'
+    throw "The Microsoft Graph $GraphPermissionValue application role was not found."
 }
 
 $requiredResourceAccess = @(
@@ -291,7 +293,7 @@ $state = [ordered]@{
     }
     GraphPermission = [ordered]@{
         ResourceAppId = [string]$graphServicePrincipal.AppId
-        Permission = 'Mail.Read'
+        Permission = $GraphPermissionValue
         AppRoleId = [string]$mailReadRole.Id
         AssignmentId = [string]$permissionAssignment.Id
     }

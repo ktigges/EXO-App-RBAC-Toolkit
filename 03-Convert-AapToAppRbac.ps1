@@ -1,7 +1,7 @@
 # Title: Convert Application Access Policy to App RBAC
 # Author: Kevin Tigges
 # Date: 2026-09-03
-# Summary: Migrates an application through App RBAC Prepare, Cutover, and Cleanup phases.
+# Summary: Prepares one application for App RBAC without performing Cutover or Cleanup.
 
 [CmdletBinding()]
 param(
@@ -12,7 +12,7 @@ param(
     [string]$AppId,
 
     [Parameter(Mandatory)]
-    [ValidateSet('Prepare', 'Cutover', 'Cleanup')]
+    [ValidateSet('Prepare')]
     [string]$Phase,
 
     [Parameter(Mandatory)]
@@ -34,17 +34,8 @@ param(
     [Parameter(Mandatory)]
     [string]$NegativeMailbox,
 
-    [ValidateRange(30, 1440)]
-    [int]$MinimumPreparationMinutes = 120,
-
-    [switch]$SkipPropagationWait,
     [switch]$AcknowledgeScopeWidening,
     [switch]$ReuseExistingScope,
-    [string]$LiveValidationScriptPath,
-    [hashtable]$LiveValidationParameters = @{},
-    [switch]$AcknowledgeManualLiveValidation,
-    [switch]$AutoRollbackOnValidationFailure,
-    [switch]$ObservationValidated,
     [switch]$Execute,
     [ValidateSet('Auto', 'Browser')]
     [string]$AuthenticationMode = 'Auto',
@@ -63,7 +54,7 @@ if (-not $StatePath) {
 
 Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
     'Application.Read.All',
-    'AppRoleAssignment.ReadWrite.All',
+    'AppRoleAssignment.Read.All',
     'Directory.Read.All'
 ) -AuthenticationMode $AuthenticationMode
 $resolvedTenantId = [string](Get-MgContext).TenantId
@@ -75,7 +66,7 @@ if (-not $servicePrincipal) {
 
 $application = Get-EntraApplicationByAppId -AppId $AppId
 $policy = $null
-if ($ScopeType -eq 'ExistingPolicyGroup' -or $Phase -eq 'Cleanup') {
+if ($ScopeType -eq 'ExistingPolicyGroup') {
     $policy = Get-ApplicationAccessPolicyForApp -AppId $AppId -PolicyIdentity $PolicyIdentity
 }
 
@@ -173,21 +164,6 @@ function Assert-AuthorizationTests {
     throw "Negative mailbox '$NegativeMailbox' is unexpectedly in scope for '$ApplicationRoleName' after $attempts attempts."
 }
 
-function Get-TargetEntraPermissionAssignment {
-    if (-not $EntraPermissionValue) {
-        throw '-EntraPermissionValue is required for Cutover and Cleanup validation.'
-    }
-
-    $matchedAssignments = @(Get-GraphApplicationPermissionDetails -ServicePrincipalId $servicePrincipal.Id |
-            Where-Object PermissionValue -eq $EntraPermissionValue)
-
-    if ($matchedAssignments.Count -gt 1) {
-        throw "Multiple Entra app-role assignments with permission '$EntraPermissionValue' were found. Remove the intended assignment manually or make the selection unambiguous."
-    }
-
-    return $matchedAssignments | Select-Object -First 1
-}
-
 function Get-PolicyControlledEntraPermissionAssignments {
     $supportedPermissionValues = @(
         'Mail.Read',
@@ -223,112 +199,6 @@ function ConvertTo-NormalizedFilter {
         $normalized = $normalized.Substring(1, $normalized.Length - 2).Trim()
     }
     return $normalized
-}
-
-function Assert-LiveValidationInputs {
-    if (-not $LiveValidationScriptPath) {
-        return
-    }
-
-    if (-not (Test-Path $LiveValidationScriptPath -PathType Leaf)) {
-        throw "Live validation script '$LiveValidationScriptPath' was not found."
-    }
-
-    $command = Get-Command -Name $LiveValidationScriptPath -ErrorAction Stop
-    $standardParameters = @('TenantId', 'AppId')
-    if ($command.Parameters.ContainsKey('Mailbox') -and $command.Parameters.ContainsKey('ExpectedAccess')) {
-        $standardParameters += @('Mailbox', 'ExpectedAccess')
-    }
-    elseif ($command.Parameters.ContainsKey('PositiveMailbox') -and $command.Parameters.ContainsKey('NegativeMailbox')) {
-        $standardParameters += @('PositiveMailbox', 'NegativeMailbox')
-    }
-    $providedParameters = @($standardParameters) + @($LiveValidationParameters.Keys)
-
-    $unknownParameters = @($LiveValidationParameters.Keys |
-            Where-Object { -not $command.Parameters.ContainsKey([string]$_) })
-    if ($unknownParameters.Count -gt 0) {
-        throw "Live validation script does not define parameters: $($unknownParameters -join ', ')."
-    }
-
-    $matchingParameterSets = @($command.ParameterSets | Where-Object {
-            $parameterSet = $_
-            $parameterNames = @($parameterSet.Parameters.Name)
-            $unsupportedParameters = @($LiveValidationParameters.Keys |
-                    Where-Object { $parameterNames -notcontains [string]$_ })
-            $missingParameters = @($parameterSet.Parameters |
-                    Where-Object IsMandatory |
-                    Where-Object { $providedParameters -notcontains $_.Name })
-
-            $unsupportedParameters.Count -eq 0 -and $missingParameters.Count -eq 0
-        })
-
-    if ($matchingParameterSets.Count -eq 0) {
-        $parameterSetRequirements = @($command.ParameterSets | ForEach-Object {
-                $requiredParameters = @($_.Parameters |
-                        Where-Object IsMandatory |
-                        ForEach-Object Name) -join ', '
-                "'$($_.Name)' requires: $requiredParameters"
-            }) -join '; '
-        throw "Live validation parameters do not satisfy a complete parameter set. $parameterSetRequirements"
-    }
-}
-
-function Invoke-LiveValidation {
-    if (-not $LiveValidationScriptPath) {
-        return $false
-    }
-
-    Assert-LiveValidationInputs
-    $hostExecutable = (Get-Process -Id $PID).Path
-    $command = Get-Command -Name $LiveValidationScriptPath -ErrorAction Stop
-    $validationCases = if ($command.Parameters.ContainsKey('Mailbox') -and $command.Parameters.ContainsKey('ExpectedAccess')) {
-        @(
-            @{ Mailbox = $PositiveMailbox; ExpectedAccess = 'Allowed' },
-            @{ Mailbox = $NegativeMailbox; ExpectedAccess = 'Denied' }
-        )
-    }
-    else {
-        @(
-            @{ PositiveMailbox = $PositiveMailbox; NegativeMailbox = $NegativeMailbox }
-        )
-    }
-
-    foreach ($validationCase in $validationCases) {
-        $argumentList = @(
-            '-NoProfile',
-            '-File',
-            $LiveValidationScriptPath,
-            '-TenantId',
-            $TenantId,
-            '-AppId',
-            $AppId
-        )
-
-        foreach ($key in $validationCase.Keys) {
-            $argumentList += "-$key"
-            $argumentList += [string]$validationCase[$key]
-        }
-
-        foreach ($key in $LiveValidationParameters.Keys) {
-            $argumentList += "-$key"
-            $value = $LiveValidationParameters[$key]
-            if ($value -is [bool]) {
-                if ($value) {
-                    continue
-                }
-                throw "Boolean live-validation parameter '$key' is false. Omit false switch parameters."
-            }
-            $argumentList += [string]$value
-        }
-
-        & $hostExecutable @argumentList | Out-Host
-        $validationExitCode = $LASTEXITCODE
-        if ($validationExitCode -ne 0) {
-            throw "Live validation script exited with code $validationExitCode."
-        }
-    }
-
-    return $true
 }
 
 if ($Phase -eq 'Prepare') {
@@ -480,8 +350,6 @@ if ($Phase -eq 'Prepare') {
         PolicyIdentity = if ($policy) { [string]$policy.Identity } else { $PolicyIdentity }
         RoleAssignmentName = [string]$assignment.Name
         AuthorizationTests = $authorizationTests
-        CutoverAtUtc = $null
-        CleanupAtUtc = $null
     }
     Write-ToolkitJson -InputObject $state -Path $StatePath
 
@@ -489,282 +357,4 @@ if ($Phase -eq 'Prepare') {
     Write-Host 'Prepare phase complete. The existing authorization path remains active.' -ForegroundColor Green
     Write-Host "State file: $StatePath"
     return
-}
-
-if (-not (Test-Path $StatePath)) {
-    throw "State file '$StatePath' was not found. Run the Prepare phase first."
-}
-
-$state = Get-Content -Path $StatePath -Raw | ConvertFrom-Json
-if ([string]$state.AppId -ne $AppId) {
-    throw "State file AppId '$($state.AppId)' does not match requested AppId '$AppId'."
-}
-if ([string]$state.ApplicationRoleName -ne $ApplicationRoleName) {
-    throw "State file role '$($state.ApplicationRoleName)' does not match requested role '$ApplicationRoleName'."
-}
-
-$exchangeServicePrincipal = Get-ExchangeServicePrincipalByAppId -AppId $AppId
-if (-not $exchangeServicePrincipal) {
-    throw 'The Exchange service-principal pointer created during Prepare no longer exists.'
-}
-
-$matchingAssignments = @(Get-TargetRoleAssignment -ExchangeServicePrincipal $exchangeServicePrincipal)
-if ($matchingAssignments.Count -ne 1) {
-    throw "Expected exactly one matching App RBAC assignment; found $($matchingAssignments.Count)."
-}
-
-$authorizationTests = Assert-AuthorizationTests
-
-if ($Phase -eq 'Cutover') {
-    if (-not $SkipPropagationWait) {
-        $preparedAt = if ($state.PreparedAtUtc -is [datetime]) {
-            ([datetime]$state.PreparedAtUtc).ToUniversalTime()
-        }
-        else {
-            [datetime]::Parse(
-                [string]$state.PreparedAtUtc,
-                [Globalization.CultureInfo]::InvariantCulture,
-                [Globalization.DateTimeStyles]::RoundtripKind
-            ).ToUniversalTime()
-        }
-        $currentUtc = (Get-Date).ToUniversalTime()
-        $ageMinutes = ($currentUtc - $preparedAt).TotalMinutes
-        if ($ageMinutes -lt 0) {
-            throw "The Prepare timestamp '$($preparedAt.ToString('o'))' is later than the current UTC time '$($currentUtc.ToString('o'))'. Verify the system clock and migration state file before Cutover."
-        }
-        if ($ageMinutes -lt $MinimumPreparationMinutes) {
-            throw "The App RBAC assignment was prepared $([math]::Floor($ageMinutes)) minutes ago. Wait at least $MinimumPreparationMinutes minutes or explicitly use -SkipPropagationWait after independent validation."
-        }
-    }
-
-    if (-not $LiveValidationScriptPath -and -not $AcknowledgeManualLiveValidation) {
-        throw 'Cutover requires -LiveValidationScriptPath or -AcknowledgeManualLiveValidation.'
-    }
-    Assert-LiveValidationInputs
-
-    $entraPermissionAssignment = Get-TargetEntraPermissionAssignment
-    if (-not $entraPermissionAssignment) {
-        throw "Entra permission '$EntraPermissionValue' is already absent. Confirm whether cutover was previously completed."
-    }
-
-    $plannedChanges = @(
-        "Remove Entra application permission '$EntraPermissionValue' from '$($servicePrincipal.DisplayName)'.",
-        'Keep the legacy Application Access Policy in place.',
-        'Require a newly issued token and live positive and negative application tests.',
-        "Record cutover state in '$StatePath'."
-    )
-    if ($LiveValidationScriptPath) {
-        $plannedChanges += "Execute live validation script '$LiveValidationScriptPath' before permission removal as a safety preflight."
-        $plannedChanges += "Execute live validation script '$LiveValidationScriptPath' again after permission removal."
-    }
-
-    if (-not $Execute) {
-        Assert-ExecutionApproved -Execute:$false -PlannedChanges $plannedChanges
-        return
-    }
-
-    if ($LiveValidationScriptPath) {
-        Write-Host 'Running pre-cutover live validation against the existing authorization path...' -ForegroundColor Cyan
-        try {
-            $null = Invoke-LiveValidation
-        }
-        catch {
-            throw "Pre-cutover live validation failed. No permissions were changed. Resolve existing authorization and propagation before retrying Cutover. $($_.Exception.Message)"
-        }
-
-        $state | Add-Member -NotePropertyName PreCutoverValidationAtUtc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-        Write-ToolkitJson -InputObject $state -Path $StatePath
-        Write-Host 'Pre-cutover live validation passed. Continuing with permission removal.' -ForegroundColor Green
-    }
-
-    $removedPermissionState = [ordered]@{
-        PermissionValue = $EntraPermissionValue
-        AssignmentId = [string]$entraPermissionAssignment.AssignmentId
-        ResourceId = [string]$entraPermissionAssignment.ResourceId
-        AppRoleId = [string]$entraPermissionAssignment.AppRoleId
-        RemovalStartedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
-        RemovedAtUtc = $null
-    }
-    $state | Add-Member -NotePropertyName RemovedEntraPermission -NotePropertyValue $removedPermissionState -Force
-    Write-ToolkitJson -InputObject $state -Path $StatePath
-
-    Write-Host "Removing Entra permission '$EntraPermissionValue'..." -ForegroundColor Cyan
-    Remove-MgServicePrincipalAppRoleAssignment `
-        -ServicePrincipalId $servicePrincipal.Id `
-        -AppRoleAssignmentId $entraPermissionAssignment.AssignmentId
-
-    $removedPermissionState.RemovedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
-    $state | Add-Member -NotePropertyName RemovedEntraPermission -NotePropertyValue $removedPermissionState -Force
-    Write-ToolkitJson -InputObject $state -Path $StatePath
-
-    $liveValidationSucceeded = $false
-    try {
-        if ($LiveValidationScriptPath) {
-            Write-Host 'Running live application validation...' -ForegroundColor Cyan
-            $liveValidationSucceeded = Invoke-LiveValidation
-        }
-        else {
-            Write-Warning 'Complete live positive and negative application tests immediately with a newly issued token.'
-        }
-    }
-    catch {
-        if ($AutoRollbackOnValidationFailure) {
-            Write-Warning "Live validation failed. Restoring Entra permission '$EntraPermissionValue'."
-            try {
-                $graphContext = Get-MgContext
-                if (-not $graphContext -or [string]$graphContext.TenantId -ne $resolvedTenantId) {
-                    Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
-                        'Application.Read.All',
-                        'AppRoleAssignment.ReadWrite.All'
-                    ) -AuthenticationMode $AuthenticationMode -GraphOnly
-                }
-
-                New-MgServicePrincipalAppRoleAssignment `
-                    -ServicePrincipalId $servicePrincipal.Id `
-                    -PrincipalId $servicePrincipal.Id `
-                    -ResourceId $entraPermissionAssignment.ResourceId `
-                    -AppRoleId $entraPermissionAssignment.AppRoleId | Out-Null
-
-                $rollbackAtUtc = (Get-Date).ToUniversalTime().ToString('o')
-                Write-Host "Rollback complete. Entra permission '$EntraPermissionValue' was restored." -ForegroundColor Green
-                try {
-                    $state | Add-Member -NotePropertyName LastRollbackAtUtc -NotePropertyValue $rollbackAtUtc -Force
-                    Write-ToolkitJson -InputObject $state -Path $StatePath
-                }
-                catch {
-                    Write-Warning "The permission was restored, but rollback state could not be written to '$StatePath': $($_.Exception.Message)"
-                }
-            }
-            catch {
-                Write-Error @"
-Automatic rollback failed. Restore the permission immediately with:
-
-Connect-MgGraph -TenantId '$TenantId' -Scopes 'Application.Read.All','AppRoleAssignment.ReadWrite.All'
-New-MgServicePrincipalAppRoleAssignment -ServicePrincipalId '$($servicePrincipal.Id)' -PrincipalId '$($servicePrincipal.Id)' -ResourceId '$($entraPermissionAssignment.ResourceId)' -AppRoleId '$($entraPermissionAssignment.AppRoleId)'
-
-Rollback error: $($_.Exception.Message)
-"@
-            }
-        }
-        throw
-    }
-
-    $state | Add-Member -NotePropertyName CutoverAtUtc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-    $state | Add-Member -NotePropertyName LiveValidationSucceeded -NotePropertyValue $liveValidationSucceeded -Force
-    $state | Add-Member -NotePropertyName AuthorizationTests -NotePropertyValue $authorizationTests -Force
-    Write-ToolkitJson -InputObject $state -Path $StatePath
-
-    Write-Host ''
-    Write-Host 'Cutover phase complete. The legacy Application Access Policy remains in place.' -ForegroundColor Green
-    if (-not $liveValidationSucceeded) {
-        Write-Warning 'Do not run Cleanup until live application validation has been completed and documented.'
-    }
-    return
-}
-
-if ($Phase -eq 'Cleanup') {
-    if (-not $ObservationValidated) {
-        throw 'Cleanup requires -ObservationValidated to confirm that live operation and the observation window are complete.'
-    }
-
-    $entraPermissionAssignment = Get-TargetEntraPermissionAssignment
-    if ($entraPermissionAssignment) {
-        throw "Entra permission '$EntraPermissionValue' is still assigned. Remove it and complete live validation before Cleanup."
-    }
-
-    $policy = Get-ApplicationAccessPolicyForApp -AppId $AppId -PolicyIdentity $PolicyIdentity
-    Assert-LiveValidationInputs
-
-    $policyScopeGroupId = Get-ApplicationAccessPolicyScopeIdentity -Policy $policy
-    if (-not $policyScopeGroupId) {
-        throw "Legacy policy '$($policy.Identity)' does not expose a scope identity required for rollback."
-    }
-    $policyScopeRecipient = Get-Recipient -Identity $policyScopeGroupId -ErrorAction Stop
-    $rollbackScopeIdentity = if ($policyScopeRecipient.PrimarySmtpAddress) {
-        [string]$policyScopeRecipient.PrimarySmtpAddress
-    }
-    else {
-        [string]$policyScopeRecipient.Identity
-    }
-
-    $legacyPolicyBackup = [ordered]@{
-        Identity = [string]$policy.Identity
-        AppId = @(([string]$policy.AppId -split '\s*,\s*') | Where-Object { $_ })
-        PolicyScopeGroupId = $rollbackScopeIdentity
-        AccessRight = [string]$policy.AccessRight
-        Description = [string]$policy.Description
-    }
-
-    $plannedChanges = @(
-        "Remove legacy Application Access Policy '$($policy.Identity)'.",
-        'Retain the Exchange App RBAC assignment and its mailbox scope.',
-        'Repeat positive and negative App RBAC authorization tests after removal.',
-        "Record cleanup state in '$StatePath'."
-    )
-    if ($LiveValidationScriptPath) {
-        $plannedChanges += "Execute live validation script '$LiveValidationScriptPath' after policy removal."
-    }
-
-    if (-not $Execute) {
-        Assert-ExecutionApproved -Execute:$false -PlannedChanges $plannedChanges
-        return
-    }
-
-    $state | Add-Member -NotePropertyName LegacyPolicyBackup -NotePropertyValue $legacyPolicyBackup -Force
-    $state | Add-Member -NotePropertyName CleanupStartedAtUtc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-    Write-ToolkitJson -InputObject $state -Path $StatePath
-
-    Write-Host "Removing Application Access Policy '$($policy.Identity)'..." -ForegroundColor Cyan
-    Remove-ApplicationAccessPolicy -Identity $policy.Identity -Confirm:$false
-
-    try {
-        $postCleanupTests = Assert-AuthorizationTests
-        $postCleanupLiveValidation = if ($LiveValidationScriptPath) {
-            Invoke-LiveValidation
-        }
-        else {
-            $false
-        }
-    }
-    catch {
-        Write-Warning 'Post-cleanup validation failed. Restoring the legacy policy and Entra permission from the saved rollback data.'
-        $restorePolicyParameters = @{
-            AppId = $legacyPolicyBackup.AppId
-            PolicyScopeGroupId = $legacyPolicyBackup.PolicyScopeGroupId
-            AccessRight = $legacyPolicyBackup.AccessRight
-        }
-        if ($legacyPolicyBackup.Description) {
-            $restorePolicyParameters.Description = $legacyPolicyBackup.Description
-        }
-        New-ApplicationAccessPolicy @restorePolicyParameters | Out-Null
-
-        if ($state.PSObject.Properties.Name -contains 'RemovedEntraPermission' -and $state.RemovedEntraPermission) {
-            $existingPermission = Get-TargetEntraPermissionAssignment
-            if (-not $existingPermission) {
-                $graphContext = Get-MgContext
-                if (-not $graphContext -or [string]$graphContext.TenantId -ne $resolvedTenantId) {
-                    Connect-AppRbacServices -TenantId $TenantId -GraphScopes @(
-                        'Application.Read.All',
-                        'AppRoleAssignment.ReadWrite.All'
-                    ) -AuthenticationMode $AuthenticationMode -GraphOnly
-                }
-
-                New-MgServicePrincipalAppRoleAssignment `
-                    -ServicePrincipalId $servicePrincipal.Id `
-                    -PrincipalId $servicePrincipal.Id `
-                    -ResourceId ([string]$state.RemovedEntraPermission.ResourceId) `
-                    -AppRoleId ([string]$state.RemovedEntraPermission.AppRoleId) | Out-Null
-            }
-        }
-        throw
-    }
-
-    $state | Add-Member -NotePropertyName CleanupAtUtc -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-    $state | Add-Member -NotePropertyName RemovedPolicyIdentity -NotePropertyValue ([string]$policy.Identity) -Force
-    $state | Add-Member -NotePropertyName PostCleanupAuthorizationTests -NotePropertyValue $postCleanupTests -Force
-    $state | Add-Member -NotePropertyName PostCleanupLiveValidationSucceeded -NotePropertyValue $postCleanupLiveValidation -Force
-    Write-ToolkitJson -InputObject $state -Path $StatePath
-
-    Write-Host ''
-    Write-Host 'Cleanup phase complete. App RBAC is now the retained Exchange authorization path.' -ForegroundColor Green
 }

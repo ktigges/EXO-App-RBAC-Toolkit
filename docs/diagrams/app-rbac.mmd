@@ -1,0 +1,29 @@
+flowchart LR
+    subgraph Entra[Microsoft Entra ID]
+        App[App registration]
+        SP[Existing Enterprise application<br/>Entra service principal]
+        Token[App-only token]
+        Removed[Broad Graph grant<br/>removed manually]
+        App --> SP
+        SP --> Token
+        SP -.-> Removed
+    end
+
+    subgraph Exchange[Exchange Online App RBAC]
+        Pointer[Exchange service-principal pointer<br/>not a second Entra SP]
+        Role[Application role assignment<br/>Application Mail.Read or Mail.Send]
+        Scope[Resource scope<br/>Management Scope or Administrative Unit]
+        Group[Mail-enabled security group<br/>when using MemberOfGroup]
+        Auth[Exchange authorization]
+        Allowed[Allowed mailbox<br/>in scope]
+        Denied[Other mailbox<br/>out of scope]
+        Pointer --> Role
+        Role --> Scope
+        Group --> Scope
+        Scope --> Auth
+        Auth -->|Allowed| Allowed
+        Auth -.->|403 denied| Denied
+    end
+
+    SP -.->|Object ID pointer| Pointer
+    Token -->|Graph mailbox request| Auth

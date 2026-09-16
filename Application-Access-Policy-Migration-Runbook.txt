@@ -1,323 +1,228 @@
-APPLICATION ACCESS POLICY TO APP RBAC LAB RUNBOOK
-=================================================
+APPLICATION ACCESS POLICY TO APP RBAC RUNBOOK
+================================================
 
-Purpose
--------
-1. Inventory the tenant.
-2. Create a legacy Application Access Policy test application.
-3. Verify allowed and denied mailbox access under the legacy policy.
-4. Create the Exchange service-principal pointer and App RBAC assignment.
-5. Cut over from broad Entra Mail.Read to Exchange App RBAC.
-6. Verify mailbox access again.
-7. Remove the legacy policy.
-8. Capture a final inventory.
+OPERATING RULE
+--------------
+- Scripts automate inventory, test-lab creation, and App RBAC Prepare only.
+- Prepare may create the Exchange service-principal pointer, Management Scope,
+  and application-role assignment.
+- An administrator manually removes one broad Entra grant at a time.
+- An administrator manually removes one legacy AAP at a time after validation.
+- Never put Cutover or Cleanup commands in a loop.
 
-Important
----------
-- Use an approved nonproduction/test tenant.
-- Run each section separately and stop on any error.
-- Commands marked PREVIEW do not change the tenant.
-- Commands marked EXECUTE change the tenant.
-- ExchangeOnlineManagement 3.6.0 must be loaded.
-- Complete interactive browser/MFA prompts when requested.
-- The denied mailbox must remain outside the authorized group.
-- Protect Output/lab/AppRbacMigrationLab.key.pem. It is an unencrypted private key with file permissions restricted on macOS.
+REQUIREMENTS
+------------
+- PowerShell 7.4 or later.
+- ExchangeOnlineManagement 3.6.0 exactly.
+- Microsoft Graph PowerShell 2.0 or later.
+- OpenSSL on PATH for the legacy lab script.
+- Browser/MFA administrative authentication.
 
-Set values once
----------------
-Set-Location '/Users/kevintigges/dev/Application Access Policy Migration'
+SET VALUES
+----------
+Set-Location '/path/to/Application Access Policy Migration'
 
-# Replace this with the tenant GUID from the Microsoft Entra admin center.
 $TenantId = '00000000-0000-0000-0000-000000000000'
-$AcceptedDomain = 'kytigges.com'
-$AuthorizedMailboxes = @(
-    'vader@kytigges.com',
-    'luke@kytigges.com'
-)
-$DeniedMailbox = 'kevin@kytigges.com'
+$AcceptedDomain = 'contoso.com'
+$AllowedMailbox = 'allowed@contoso.com'
+$DeniedMailbox = 'denied@contoso.com'
 
-STEP 1 - INITIAL INVENTORY (READ-ONLY)
---------------------------------------
-.\02-Export-AapInventory.ps1 `
-    -TenantId $TenantId `
-    -AuthenticationMode Browser
-
-Confirm that the script prints:
-Application Access Policy inventory complete.
-
-Review the newest Output/inventory-yyyyMMdd-HHmmss/inventory-review.html file.
-
-STEP 2 - CREATE THE LEGACY TEST APPLICATION
+STEP 1 - CREATE AND TEST THE LEGACY LAB APP
 -------------------------------------------
-$legacyParameters = @{
+$lab = @{
     TenantId                    = $TenantId
     AcceptedDomain              = $AcceptedDomain
-    AuthorizedMailboxAddresses = $AuthorizedMailboxes
+    AuthorizedMailboxAddresses = @($AllowedMailbox)
     DeniedMailboxAddress        = $DeniedMailbox
     AppDisplayName              = 'AAP Migration Lab'
     ScopeGroupName              = 'AAP-Lab-Mailboxes'
+    GraphPermissionValue        = 'Mail.Read'
     AuthenticationMode         = 'Browser'
 }
 
-PREVIEW:
-
-.\01-New-LegacyAapLab.ps1 @legacyParameters
-
-Review the planned changes. Then run EXECUTE:
-
-.\01-New-LegacyAapLab.ps1 @legacyParameters -Execute
+# Preview, then execute.
+./01-New-LegacyAapLab.ps1 @lab
+./01-New-LegacyAapLab.ps1 @lab -Execute
 
 This creates:
-- An Entra application registration.
-- An Entra Enterprise Application service principal.
+- An Entra app registration.
+- Its Entra Enterprise Application/service principal.
 - An OpenSSL certificate and private key.
-- Microsoft Graph Mail.Read application permission with admin consent.
-- A mail-enabled security group containing only the authorized mailboxes.
-- A legacy RestrictAccess Application Access Policy.
+- The selected Graph application permission with admin consent.
+- A mail-enabled security group containing only the allowed mailbox.
+- A legacy RestrictAccess AAP.
+- Output/lab/legacy-lab-state.json.
 
-STEP 3 - LOAD THE LAB STATE
----------------------------
-$StatePath = Join-Path $PWD 'Output/lab/legacy-lab-state.json'
-$state = Get-Content -LiteralPath $StatePath -Raw -ErrorAction Stop |
+The Enterprise Application is already the Entra service principal. Prepare later
+creates an Exchange pointer to it; it does not create another Entra object.
+
+Load the state:
+
+$state = Get-Content ./Output/lab/legacy-lab-state.json -Raw |
     ConvertFrom-Json
 
-$requiredStateValues = @(
-    $state.Application.AppId
-    $state.Certificate.CertificatePemPath
-    $state.Certificate.PrivateKeyPath
-)
-if ($requiredStateValues -contains $null -or $requiredStateValues -contains '') {
-    throw "Lab state is incomplete: $StatePath"
-}
+Confirm the legacy configuration calculation:
 
-$CertificatePemPath =
-    (Resolve-Path -LiteralPath $state.Certificate.CertificatePemPath -ErrorAction Stop).Path
-$PrivateKeyPath =
-    (Resolve-Path -LiteralPath $state.Certificate.PrivateKeyPath -ErrorAction Stop).Path
+Test-ApplicationAccessPolicy -AppId $state.Application.AppId `
+    -Identity $AllowedMailbox
+Test-ApplicationAccessPolicy -AppId $state.Application.AppId `
+    -Identity $DeniedMailbox
 
-$state.Application
-$state.Certificate
-$state.AuthorizedMailboxes
-$state.DeniedMailbox
+Required results:
+- Allowed mailbox: Granted
+- Denied mailbox: Denied
 
-STEP 4 - TEST ACCESS BEFORE MIGRATION
--------------------------------------
-First test each mailbox individually against the legacy policy:
+Run live app-only Mail.Read tests:
 
-Test-ApplicationAccessPolicy `
-    -Identity 'vader@kytigges.com' `
-    -AppId $state.Application.AppId
-
-Test-ApplicationAccessPolicy `
-    -Identity 'kevin@kytigges.com' `
-    -AppId $state.Application.AppId
-
-Required policy results:
-- vader@kytigges.com: Granted
-- kevin@kytigges.com: Denied
-
-These commands calculate the Exchange policy configuration. They do not call Microsoft Graph as the application.
-
-These commands validate the existing Exchange policy configuration. If an
-application-level mailbox test is required, run it separately through the
-application's normal test procedure.
-
-Do not continue unless both policy results are correct.
-
-STEP 5 - INVENTORY THE TEST APPLICATION
----------------------------------------
-.\02-Export-AapInventory.ps1 `
+./04-Test-GraphMailboxAccess.ps1 `
     -TenantId $TenantId `
-    -EvaluateEffectiveAccess `
-    -EffectiveAccessAppId $state.Application.AppId `
+    -AppId $state.Application.AppId `
+    -Mailbox $AllowedMailbox `
+    -ExpectedAccess Allowed `
+    -CertificatePemPath $state.Certificate.CertificatePemPath `
+    -PrivateKeyPath $state.Certificate.PrivateKeyPath
+
+./04-Test-GraphMailboxAccess.ps1 `
+    -TenantId $TenantId `
+    -AppId $state.Application.AppId `
+    -Mailbox $DeniedMailbox `
+    -ExpectedAccess Denied `
+    -CertificatePemPath $state.Certificate.CertificatePemPath `
+    -PrivateKeyPath $state.Certificate.PrivateKeyPath
+
+STEP 2 - EXPORT ALL AAP APPLICATIONS (READ-ONLY)
+------------------------------------------------
+./02-Export-AapInventory.ps1 `
+    -TenantId $TenantId `
     -AuthenticationMode Browser
 
-Review the newest inventory dashboard and effective-legacy-access.csv.
+Open the newest Output/inventory-yyyyMMdd-HHmmss/inventory-review.html.
 
-STEP 6 - PREPARE APP RBAC AND CREATE THE EXCHANGE SPN
------------------------------------------------------
+Review and join by AppId:
+1. migration-readiness-issues.csv
+2. application-access-policies.csv
+3. applications.csv
+4. application-permissions.csv
+5. scope-members.csv
+6. existing-app-rbac-assignments.csv
+
+Important fields:
+- applications.csv ServicePrincipalObjectId is the Enterprise Application object
+  ID required by Exchange New-ServicePrincipal.
+- ApplicationObjectId is the app-registration object ID; do not use it as the
+  Exchange pointer's ObjectId.
+- application-permissions.csv AssignmentId identifies the broad grant considered
+  during manual Cutover.
+- application-access-policies.csv PolicyIdentity identifies the legacy policy
+  considered during manual Cleanup.
+
+Do not prepare wildcard policies, DenyAccess policies, ambiguous permissions,
+unknown owners, nested groups, or unverified scopes.
+
+STEP 3 - PREPARE EVERY APPROVED APPLICATION
+-------------------------------------------
+Create one reviewed parameter block per application. Example:
+
 $app = @{
     TenantId             = $TenantId
-    AppId                = $state.Application.AppId
+    AppId                = 'APPLICATION-CLIENT-ID'
     ApplicationRoleName  = 'Application Mail.Read'
     EntraPermissionValue = 'Mail.Read'
     ScopeType            = 'ExistingPolicyGroup'
-    PositiveMailbox      = $AuthorizedMailboxes[0]
+    PositiveMailbox      = $AllowedMailbox
     NegativeMailbox      = $DeniedMailbox
     AuthenticationMode   = 'Browser'
 }
 
-PREPARE - PREVIEW (NO CHANGES):
+# Preview, then execute Prepare for this application.
+./03-Convert-AapToAppRbac.ps1 @app -Phase Prepare
+./03-Convert-AapToAppRbac.ps1 @app -Phase Prepare -Execute
 
-.\03-Convert-AapToAppRbac.ps1 @app -Phase Prepare
+Prepare creates or reuses:
+- The Exchange service-principal pointer.
+- The Exchange Management Scope.
+- The scoped Exchange application-role assignment.
 
-Review the planned changes. Then run Prepare with -Execute:
+Prepare does not remove the broad Entra grant or the legacy AAP. Repeat this
+reviewed Prepare operation for every approved application.
 
-PREPARE - EXECUTE:
+Wait for propagation, then verify each prepared application:
 
-.\03-Convert-AapToAppRbac.ps1 @app -Phase Prepare -Execute
-
-Prepare creates:
-- The Exchange service-principal pointer for the Entra service principal.
-- An Exchange Management Scope based on the legacy policy group.
-- An Application Mail.Read role assignment over that scope.
-
-Prepare leaves the broad Entra Mail.Read permission and legacy policy active.
-
-POST-PREPARE AUTHORIZATION TESTS (READ-ONLY):
-
-Wait at least two hours for App RBAC propagation. Then confirm that the existing
-legacy policy still calculates the same access:
-
-Test-ApplicationAccessPolicy `
-    -Identity 'vader@kytigges.com' `
-    -AppId $state.Application.AppId
-
-Test-ApplicationAccessPolicy `
-    -Identity 'kevin@kytigges.com' `
-    -AppId $state.Application.AppId
-
-Required legacy policy results:
-- vader@kytigges.com: Granted
-- kevin@kytigges.com: Denied
-
-Confirm that the new App RBAC assignment calculates the same scope:
+Get-ServicePrincipal | Where-Object AppId -eq $app.AppId |
+    Format-List DisplayName, AppId, ObjectId, Identity
 
 Test-ServicePrincipalAuthorization `
-    -Identity $state.Application.AppId `
-    -Resource 'vader@kytigges.com' |
-    Where-Object RoleName -eq 'Application Mail.Read'
+    -Identity $app.AppId -Resource $app.PositiveMailbox |
+    Where-Object RoleName -eq $app.ApplicationRoleName
 
 Test-ServicePrincipalAuthorization `
-    -Identity $state.Application.AppId `
-    -Resource 'kevin@kytigges.com' |
-    Where-Object RoleName -eq 'Application Mail.Read'
+    -Identity $app.AppId -Resource $app.NegativeMailbox |
+    Where-Object RoleName -eq $app.ApplicationRoleName
 
-Required App RBAC results:
-- vader@kytigges.com: InScope is True
-- kevin@kytigges.com: InScope is False
+Required results:
+- Positive mailbox: InScope True
+- Negative mailbox: InScope False
 
-These commands test the Exchange App RBAC configuration separately for each
-mailbox. They do not call Microsoft Graph. Perform any application-level mailbox
-test separately through the application's normal test procedure.
+STEP 4 - MANUALLY CUT OVER ONE APPLICATION
+------------------------------------------
+Do not start another application's manual migration until this one is complete.
 
-WHY THE EXCHANGE TEST CAN PASS WHILE THE GRAPH TEST FAILS:
+Use the selected AssignmentId from application-permissions.csv:
 
-- Test-ServicePrincipalAuthorization evaluates the configured Exchange App RBAC
-    role assignment and scope. It can correctly show Vader as InScope True and
-    Kevin as InScope False as soon as Exchange can calculate the configuration.
-- Script 04 sends a real Microsoft Graph mailbox request using an app-only token.
-    Its result depends on data-plane propagation, removal of the broad Entra
-    Mail.Read permission, and issuance of a new token after those changes.
-- Therefore, InScope False means the App RBAC scope is configured correctly; it
-    does not prove that Microsoft Graph is enforcing that scope yet.
-- If a failed Cutover restored broad Entra Mail.Read, Kevin can succeed in script
-    04 even though Test-ServicePrincipalAuthorization reports InScope False.
+Connect-MgGraph -TenantId $TenantId `
+    -Scopes Application.Read.All,AppRoleAssignment.ReadWrite.All `
+    -ContextScope Process -NoWelcome
 
-Use Test-ServicePrincipalAuthorization to validate the configuration. Use script
-04 after a completed Cutover and with a new token to validate live enforcement.
-Both tests must produce the expected result before Cleanup.
+$AssignmentId = 'ASSIGNMENT-ID-FROM-APPLICATION-PERMISSIONS-CSV'
+$entraSp = Get-MgServicePrincipal -Filter "appId eq '$($app.AppId)'" -All |
+    Select-Object -First 1
+$assignment = Get-MgServicePrincipalAppRoleAssignment `
+    -ServicePrincipalId $entraSp.Id -All |
+    Where-Object Id -eq $AssignmentId
 
-Do not continue to Cutover unless all post-Prepare results are correct.
+$assignment | Format-List Id, PrincipalId, ResourceId, AppRoleId
 
-STEP 7 - CUT OVER
------------------
-CUTOVER - PREVIEW (NO CHANGES):
+STOP if no assignment is returned or its IDs do not match the reviewed row.
+After change approval, remove that exact assignment manually:
 
-.\03-Convert-AapToAppRbac.ps1 @app `
-    -Phase Cutover `
-    -AcknowledgeManualLiveValidation
+Remove-MgServicePrincipalAppRoleAssignment `
+    -ServicePrincipalId $entraSp.Id `
+    -AppRoleAssignmentId $assignment.Id `
+    -Confirm
 
-Review the planned changes. Then run Cutover with -Execute:
+Disconnect-MgGraph
+Wait for propagation and ensure the application obtains a fresh token.
 
-CUTOVER - EXECUTE:
+Run the two script 04 commands from Step 1 using this application's App ID and
+credential. The allowed request must succeed and the denied request must return
+an authorization denial. Test the application's normal business operation too.
 
-.\03-Convert-AapToAppRbac.ps1 @app `
-    -Phase Cutover `
-    -AcknowledgeManualLiveValidation `
-    -Execute
+If the denied mailbox succeeds, STOP. Check for another broad permission grant,
+a stale token, and propagation delay. Do not remove the legacy AAP.
 
-Cutover removes the broad Entra Mail.Read grant. The acknowledgement confirms that
-application-level mailbox validation will be performed separately. This path does
-not run the dual-mailbox Graph test or automatic validation rollback.
+STEP 5 - MANUALLY REMOVE THIS APPLICATION'S LEGACY AAP
+------------------------------------------------------
+Continue only after the observation period and application-owner approval.
+Use PolicyIdentity from application-access-policies.csv:
 
-STEP 8 - TEST ACCESS AGAIN
---------------------------
-Test-ServicePrincipalAuthorization `
-    -Identity $state.Application.AppId `
-    -Resource 'vader@kytigges.com' |
-    Where-Object RoleName -eq 'Application Mail.Read'
+$PolicyIdentity = 'POLICY-IDENTITY-FROM-APPLICATION-ACCESS-POLICIES-CSV'
+$policy = Get-ApplicationAccessPolicy -Identity $PolicyIdentity
+$policy | Format-List Identity, AppId, AccessRight, PolicyScopeGroupId, Description
 
-Test-ServicePrincipalAuthorization `
-    -Identity $state.Application.AppId `
-    -Resource 'kevin@kytigges.com' |
-    Where-Object RoleName -eq 'Application Mail.Read'
+STOP unless the App ID and scope match the reviewed application. Remove that one
+policy manually:
 
-Required result:
-- vader@kytigges.com: InScope is True
-- kevin@kytigges.com: InScope is False
+Remove-ApplicationAccessPolicy -Identity $policy.Identity -Confirm
 
-These are Exchange configuration checks. Test actual mailbox operations separately
-through the application's normal test procedure before Cleanup.
+Repeat the App RBAC configuration tests, allowed and denied live tests, and normal
+application test. Export and archive a final inventory.
 
-OPTIONAL DIRECT GRAPH MAILBOX TEST (RUN ONE MAILBOX AT A TIME):
+STEP 6 - SELECT THE NEXT APPLICATION
+------------------------------------
+Only after Step 5 passes, select the next prepared application and repeat Steps 4
+and 5.
 
-.\04-Test-GraphMailboxAccess.ps1 `
-    -TenantId $TenantId `
-    -AppId $state.Application.AppId `
-    -Mailbox 'vader@kytigges.com' `
-    -ExpectedAccess Allowed `
-    -CertificatePemPath $CertificatePemPath `
-    -PrivateKeyPath $PrivateKeyPath
-
-.\04-Test-GraphMailboxAccess.ps1 `
-    -TenantId $TenantId `
-    -AppId $state.Application.AppId `
-    -Mailbox 'kevin@kytigges.com' `
-    -ExpectedAccess Denied `
-    -CertificatePemPath $CertificatePemPath `
-    -PrivateKeyPath $PrivateKeyPath
-
-Run these as two separate commands. If the denied test says the request succeeded,
-the Graph call worked but live authorization did not enforce the expected scope.
-This is a failed authorization result, not a script malfunction. Stop, do not run
-Cleanup, verify that broad Entra Mail.Read is absent, wait for propagation, obtain
-a new token, and retry the denied-mailbox command.
-
-It is possible for Test-ServicePrincipalAuthorization to continue showing Kevin
-as InScope False while this Graph request succeeds. The first result validates the
-configured scope; the second validates whether that scope is active in the live
-Graph authorization path. Do not treat the configuration test as a substitute for
-the post-Cutover Graph test.
-
-Do not clean up the legacy policy unless both results are correct and the observation period is complete.
-
-STEP 9 - REMOVE THE LEGACY POLICY
----------------------------------
-PREVIEW:
-
-.\03-Convert-AapToAppRbac.ps1 @app `
-    -Phase Cleanup `
-    -ObservationValidated
-
-Review the planned changes. Then run EXECUTE:
-
-.\03-Convert-AapToAppRbac.ps1 @app `
-    -Phase Cleanup `
-    -ObservationValidated `
-    -Execute
-
-Cleanup removes the legacy Application Access Policy and leaves App RBAC active.
-
-STEP 10 - FINAL INVENTORY
--------------------------
-.\02-Export-AapInventory.ps1 `
-    -TenantId $TenantId `
-    -AuthenticationMode Browser
-
-Confirm the final inventory shows the App RBAC assignment and no legacy policy for the test application.
-
-Disconnect when finished
-------------------------
+DISCONNECT
+----------
 Disconnect-ExchangeOnline -Confirm:$false
 Disconnect-MgGraph -ErrorAction SilentlyContinue

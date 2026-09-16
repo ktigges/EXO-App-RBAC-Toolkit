@@ -1,0 +1,25 @@
+flowchart LR
+    subgraph Entra[Microsoft Entra ID]
+        App[App registration]
+        SP[Enterprise application<br/>service principal]
+        Grant[Broad Graph application grant<br/>Mail.Read or Mail.Send]
+        Token[App-only token]
+        App --> SP
+        SP --> Grant
+        SP --> Token
+        Grant --> Token
+    end
+
+    subgraph Exchange[Exchange Online]
+        Graph[Graph mailbox request]
+        AAP[Legacy RestrictAccess<br/>Application Access Policy]
+        Group[Mail-enabled security group]
+        Allowed[Allowed mailbox<br/>direct group member]
+        Denied[Other mailbox<br/>not a group member]
+        Graph --> AAP
+        Group --> AAP
+        AAP -->|Granted| Allowed
+        AAP -.->|Denied| Denied
+    end
+
+    Token --> Graph
