@@ -81,6 +81,11 @@ Required results:
 - Allowed mailbox: Granted
 - Denied mailbox: Denied
 
+These are immediate configuration calculations. A new AAP or group-membership
+change can take up to two hours to reach the Graph data plane. Wait for
+propagation before treating the following live Graph tests as authoritative.
+Each script 04 invocation disconnects Graph and obtains a new app-only token.
+
 Run live app-only Mail.Read tests:
 
 ./04-Test-GraphMailboxAccess.ps1 `
@@ -90,6 +95,12 @@ Run live app-only Mail.Read tests:
     -ExpectedAccess Allowed `
     -CertificatePemPath $state.Certificate.CertificatePemPath `
     -PrivateKeyPath $state.Certificate.PrivateKeyPath
+
+If the allowed mailbox returns 403 ErrorAccessDenied with an RAOP/AppOnly
+AccessPolicy message, confirm direct scope-group membership and a Granted
+Test-ApplicationAccessPolicy result. If both are correct and the configuration is
+new, wait up to two hours and rerun script 04. Do not recreate the app,
+certificate, or mailbox solely because of this propagation-period response.
 
 ./04-Test-GraphMailboxAccess.ps1 `
     -TenantId $TenantId `

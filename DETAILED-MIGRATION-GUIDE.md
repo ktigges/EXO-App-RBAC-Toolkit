@@ -602,11 +602,8 @@ Set the test values:
 ```powershell
 $TenantId = "00000000-0000-0000-0000-000000000000"
 $AcceptedDomain = "contoso.com"
-$AuthorizedMailboxes = @(
-    "aap-lab-invoices@contoso.com",
-    "aap-lab-errors@contoso.com"
-)
-$DeniedMailbox = "aap-lab-denied@contoso.com"
+$AuthorizedMailboxes = @("allowed@contoso.com")
+$DeniedMailbox = "denied@contoso.com"
 
 Set-Location "C:\Path\Application Access Policy Migration"
 ```
@@ -623,7 +620,6 @@ $legacyParameters = @{
     AcceptedDomain = $AcceptedDomain
     AuthorizedMailboxAddresses = $AuthorizedMailboxes
     DeniedMailboxAddress = $DeniedMailbox
-    CreateSharedMailboxes = $true
 }
 
 # Preview
@@ -634,6 +630,10 @@ $legacyParameters = @{
 ```
 
 This creates an Entra application, Enterprise Application service principal, certificate, Microsoft Graph `Mail.Read` permission, scope group, and legacy `RestrictAccess` policy. Results are saved in `Output\lab\legacy-lab-state.json`.
+
+The example expects both mailbox addresses to exist. Add `CreateSharedMailboxes = $true` only when the lab should create missing addresses as shared mailboxes.
+
+The policy and group-membership configuration tests may succeed before the Graph data plane has received the new AAP state. Allow up to two hours before treating live Graph results as authoritative. A `403 ErrorAccessDenied` response containing `[RAOP]` or `AppOnly AccessPolicy` means Exchange AAP enforcement blocked the request; verify direct group membership and `Test-ApplicationAccessPolicy`, then retry with a newly issued token after propagation.
 
 ### 2. Inventory the legacy test application
 
@@ -666,12 +666,8 @@ This creates a separate application with Exchange `Application Mail.Read`. It do
 $nativeParameters = @{
     TenantId = $TenantId
     AcceptedDomain = $AcceptedDomain
-    AuthorizedMailboxAddresses = @(
-        "rbac-lab-invoices@contoso.com",
-        "rbac-lab-errors@contoso.com"
-    )
-    DeniedMailboxAddress = "rbac-lab-denied@contoso.com"
-    CreateSharedMailboxes = $true
+    AuthorizedMailboxAddresses = @("allowed@contoso.com")
+    DeniedMailboxAddress = "denied@contoso.com"
 }
 
 # Preview, then execute

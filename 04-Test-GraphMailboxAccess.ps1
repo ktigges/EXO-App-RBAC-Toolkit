@@ -110,10 +110,16 @@ if ($requestError) {
         [string]$requestError.Exception.Message
         [string]$requestError.ErrorDetails.Message
     ) -join ' '
+    if ($null -eq $statusCode -and $errorText -match 'HTTP/\d(?:\.\d)?\s+(?<StatusCode>\d{3})') {
+        $statusCode = [int]$Matches.StatusCode
+    }
 }
 
 if ($ExpectedAccess -eq 'Allowed') {
     if (-not $requestSucceeded) {
+        if ($errorText -match '\[RAOP\]|AppOnly AccessPolicy') {
+            throw "Mailbox '$Mailbox' was expected to be allowed, but Exchange blocked the app-only request through its Application Access Policy enforcement. Status: '$statusCode'. If the policy or scope-group membership was created or changed recently, wait up to two hours for Graph data-plane propagation and retry with a new token. Also verify that this mailbox is a direct member of the policy scope group and that no DenyAccess policy applies. Error: $errorText"
+        }
         throw "Mailbox '$Mailbox' was expected to be allowed, but the request failed. Status: '$statusCode'. Error: $errorText"
     }
     if ($null -eq $response) {

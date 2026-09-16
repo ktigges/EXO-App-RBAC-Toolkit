@@ -101,11 +101,64 @@ The first command previews; the second creates:
 
 The script also calculates legacy AAP access for the allowed and denied mailboxes. It does not create App RBAC or prove live Graph enforcement.
 
-Load the state and run the live `Mail.Read` checks separately:
+### Inspect what the lab created and who has access
+
+Load the saved state so the commands use the exact application, policy, and group created by the lab:
 
 ```powershell
-$state = Get-Content ./Output/lab/legacy-lab-state.json -Raw | ConvertFrom-Json
+$state = Get-Content ./Output/lab/legacy-lab-state.json -Raw |
+    ConvertFrom-Json
+$AppId = $state.Application.AppId
+$PolicyIdentity = $state.ApplicationAccessPolicy.Identity
+$ScopeGroup = $state.ScopeGroup.PrimarySmtpAddress
+```
 
+Show every legacy AAP in the tenant:
+
+```powershell
+Get-ApplicationAccessPolicy |
+    Format-List Identity, AppId, AccessRight, PolicyScopeGroupId, Description
+```
+
+Show this lab application's exact policy:
+
+```powershell
+Get-ApplicationAccessPolicy -Identity $PolicyIdentity |
+    Format-List Identity, AppId, AccessRight, PolicyScopeGroupId, Description
+```
+
+Show the actual allowed mailbox set. For this `RestrictAccess` policy, every direct mailbox member of the scope group is allowed:
+
+```powershell
+Get-DistributionGroupMember -Identity $ScopeGroup -ResultSize Unlimited |
+    Format-Table DisplayName, PrimarySmtpAddress, RecipientType
+```
+
+Recheck every requested authorized mailbox and the denied mailbox:
+
+```powershell
+foreach ($mailbox in $state.AuthorizedMailboxes) {
+    Test-ApplicationAccessPolicy -AppId $AppId -Identity $mailbox
+}
+
+Test-ApplicationAccessPolicy `
+    -AppId $AppId `
+    -Identity $state.DeniedMailbox
+```
+
+Test any other mailbox when you need its effective policy result:
+
+```powershell
+Test-ApplicationAccessPolicy `
+    -AppId $AppId `
+    -Identity 'another-mailbox@contoso.com'
+```
+
+`Granted` means the legacy policy allows the application; `Denied` means it blocks the application. The returned `Mailbox` value may be an Exchange object GUID even when the command used an email address.
+
+`Test-ApplicationAccessPolicy` validates Exchange configuration immediately, but a new AAP or group-membership change can take up to two hours to reach the Graph data plane. Wait for propagation, then run the live `Mail.Read` checks separately. Script 04 disconnects Graph first so each run obtains a new app-only token.
+
+```powershell
 ./04-Test-GraphMailboxAccess.ps1 `
     -TenantId $TenantId `
     -AppId $state.Application.AppId `
@@ -122,6 +175,15 @@ $state = Get-Content ./Output/lab/legacy-lab-state.json -Raw | ConvertFrom-Json
     -CertificatePemPath $state.Certificate.CertificatePemPath `
     -PrivateKeyPath $state.Certificate.PrivateKeyPath
 ```
+
+If the allowed mailbox returns `403 ErrorAccessDenied` with `[RAOP] Blocked by tenant configured AppOnly AccessPolicy settings`:
+
+1. Confirm the mailbox appears in `Get-DistributionGroupMember -Identity $ScopeGroup`.
+2. Confirm `Test-ApplicationAccessPolicy -AppId $AppId -Identity $AllowedMailbox` returns `Granted`.
+3. If the policy or membership is new, wait up to two hours and rerun script 04.
+4. If it still fails, list every policy for the App ID and check for an applicable `DenyAccess` policy.
+
+Do not recreate the app, certificate, or mailbox solely because of an RAOP response during the propagation window.
 
 ## 2. Export and Review All Applications
 

@@ -222,7 +222,7 @@ function Get-OrCreateTestMailbox {
 $authorizedRecipients = foreach ($address in $AuthorizedMailboxAddresses) {
     Get-OrCreateTestMailbox -Address $address
 }
-$deniedRecipient = Get-OrCreateTestMailbox -Address $DeniedMailboxAddress
+Get-OrCreateTestMailbox -Address $DeniedMailboxAddress | Out-Null
 
 $scopeGroup = Get-DistributionGroup -Identity $ScopeGroupPrimarySmtpAddress -ErrorAction SilentlyContinue
 if (-not $scopeGroup) {
@@ -326,4 +326,5 @@ Write-Host "Certificate thumbprint: $($certificate.Thumbprint)"
 Write-Host "Scope group: $ScopeGroupPrimarySmtpAddress"
 Write-Host "State file: $statePath"
 Write-Host ''
+Write-Host 'Exchange configuration tests are complete. Wait up to two hours before relying on live Graph results for the new policy or group membership.' -ForegroundColor Yellow
 Write-Host "Protect the private key file: $privateKeyPath" -ForegroundColor Yellow
